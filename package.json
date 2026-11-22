@@ -1,0 +1,37 @@
+{
+  "name": "swarm-uwb-textbook",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "군집은 서로를 어떻게 아는가 — UWB 실내 군집 인터랙티브 교재",
+  "scripts": {
+    "prepare:assets": "node scripts/prepare-assets.mjs",
+    "predev": "node scripts/prepare-assets.mjs",
+    "dev": "vite",
+    "prebuild": "node scripts/prepare-assets.mjs",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --port 4173 --strictPort",
+    "typecheck": "tsc --noEmit",
+    "verify": "node verify/run.mjs",
+    "test": "vitest run",
+    "test:smoke": "playwright test",
+    "zip": "node scripts/make-zip.mjs"
+  },
+  "dependencies": {
+    "@preact/signals": "^2.11.4",
+    "katex": "^0.19.1",
+    "preact": "^11.2.0",
+    "pyodide": "^314.0.8",
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@preact/preset-vite": "^2.10.6",
+    "@types/node": "^26.6.6",
+    "@types/three": "^0.187.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
+  }
+}

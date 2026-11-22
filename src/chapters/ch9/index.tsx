@@ -1,0 +1,380 @@
+import type { ChapterDef } from '../../app/chapters';
+import { fieldMeta } from '../../app/fields';
+import { L, fix, fmt, tr } from '../../app/i18n';
+import { budget, config, getPath } from '../../app/store';
+import { computeBudget } from '../../sim/budget';
+import { effectiveN, predictStatic, samplesForSigma, sigmaRelStdErr, withPath } from '../../sim/ch9_measure';
+import { der } from '../../sources';
+import {
+  CfgSlider, CfgVal, CodeTask, CodeView, Derivation, List, M, Note, P, Predict, PredictNumber, Section, SrcBadge, Stat, StatRow, Status, T,
+} from '../../ui';
+import { LogDemo } from './LogDemo';
+import { ClockPitfall, DriftPitfall, EstimatorLink, SigmaMc } from './labs';
+import { fitLogTask, tasks } from './tasks';
+
+/** 이 장이 측정으로 바꾸려는 예시값 설정과, 그것을 채우는 실험 */
+const KEY: { path: string; by: L }[] = [
+  { path: 'uwb.sigmaTdoa', by: { ko: '실험 1 (정지 로그에서 역산) 또는 실험 2 (거리차 로그)', en: 'Experiment 1 (back-calculated from a static log) or 2 (range-difference log)' } },
+  { path: 'uwb.sigmaTwr', by: { ko: '실험 2 (거리 로그)', en: 'Experiment 2 (range log)' } },
+  { path: 'uwb.pNlos', by: { ko: '실험 2 (오른쪽 꼬리)', en: 'Experiment 2 (right tail)' } },
+  { path: 'uwb.nlosBiasMean', by: { ko: '실험 2 (오른쪽 꼬리)', en: 'Experiment 2 (right tail)' } },
+  { path: 'uwb.anchorSurveyError', by: { ko: '실험 2 (앵커별 편향, 어림값)', en: 'Experiment 2 (per-anchor bias, rough)' } },
+  { path: 'comm.delayMean', by: { ko: '실험 3 (왕복 지연)', en: 'Experiment 3 (round trip)' } },
+  { path: 'comm.delayJitter', by: { ko: '실험 3 (왕복 지연)', en: 'Experiment 3 (round trip)' } },
+  { path: 'comm.loss.pGB', by: { ko: '실험 4 (빠진 순번)', en: 'Experiment 4 (missing sequence numbers)' } },
+  { path: 'comm.loss.pBG', by: { ko: '실험 4 (빠진 순번)', en: 'Experiment 4 (missing sequence numbers)' } },
+  { path: 'estimation.latency', by: { ko: '지상 실험으로는 못 잽니다 (기체 안의 시간. 6장의 값을 쓰고, 실험 3 의 왕복에 일부가 섞여 들어옵니다)', en: 'Not measurable on the ground (time inside the vehicle; use the value of chapter 6 — part of it shows up in the round trip of experiment 3)' } },
+  { path: 'safety.trackingError', by: { ko: '지상 실험으로는 못 잽니다 (제자리 비행 로그에 실험 1 의 계산을 적용)', en: 'Not measurable on the ground (apply the computation of experiment 1 to a hover log)' } },
+];
+
+function KeyTable() {
+  const cfg = config.value;
+  const b = budget.value;
+  const rows = KEY.map((k) => {
+    const v = getPath(cfg, k.path) as number;
+    return { ...k, d: computeBudget(withPath(cfg, k.path, 2 * v)).minSepH - b.minSepH };
+  }).sort((p, q) => Math.abs(q.d) - Math.abs(p.d));
+  return (
+    <div class="table-wrap">
+      <table class="tbl" data-testid="ch9-key-table">
+        <thead><tr>
+          <th>{tr({ ko: '전역 설정 (지금은 예시값)', en: 'Global setting (an example value for now)' })}</th>
+          <th class="r">{tr({ ko: '지금 값', en: 'Current value' })}</th>
+          <th class="r">{tr({ ko: '값이 2배면 권장 간격은', en: 'Recommended spacing if doubled' })}</th>
+          <th>{tr({ ko: '무엇으로 재나', en: 'Measured by' })}</th>
+        </tr></thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.path}>
+              <td>{tr(fieldMeta(r.path)!.label)}</td>
+              <td class="r"><CfgVal path={r.path} /></td>
+              <td class="r"><b class="num">{r.d >= 0 ? '+' : '−'}{fmt(Math.abs(r.d) * 100, 2)} cm</b><SrcBadge src={der('ch9#sensitivity', { ko: '이 값만 2배로 바꿔 오차 예산을 다시 계산한 결과와의 차', en: 'Difference to the error budget recomputed with only this value doubled' })} /></td>
+              <td>{tr(r.by)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+const ROS_EXAMPLE = `# 예시 (EXAMPLE) - 여러분의 토픽 이름과 메시지 형식에 맞게 고치세요.
+# Adapt the topic name and message type to your own system.
+# bag 에 기록된 위치(pose) 토픽을 읽어 t,x,y,z CSV 로 쓴다.
+import csv
+import rosbag2_py
+from rclpy.serialization import deserialize_message
+from rosidl_runtime_py.utilities import get_message
+
+BAG = "static_test_bag"        # 기록해 둔 bag 폴더
+TOPIC = "/my_drone/pose"       # <- 여러분의 토픽 이름으로
+OUT = "static_log.csv"
+
+reader = rosbag2_py.SequentialReader()
+reader.open(rosbag2_py.StorageOptions(uri=BAG), rosbag2_py.ConverterOptions("", ""))
+types = {t.name: t.type for t in reader.get_all_topics_and_types()}
+Msg = get_message(types[TOPIC])
+
+with open(OUT, "w", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["t", "x", "y", "z"])              # 열 이름은 소문자
+    t0 = None
+    while reader.has_next():
+        topic, raw, t_ns = reader.read_next()     # t_ns: PC 가 받아 적은 시각 [ns]
+        if topic != TOPIC:
+            continue
+        msg = deserialize_message(raw, Msg)
+        p = msg.pose.position                     # 메시지 형식에 맞게 고칠 곳
+        if t0 is None:
+            t0 = t_ns
+        w.writerow([(t_ns - t0) * 1e-9, p.x, p.y, p.z])   # 초, 미터
+`;
+
+function Body() {
+  const cfg = config.value;
+  const b = budget.value;
+  const center = [cfg.hall.x / 2, cfg.hall.y / 2, cfg.formation.height];
+  const pred = predictStatic(cfg, center);
+  const n10 = samplesForSigma(0.1), n5 = samplesForSigma(0.05);
+  const se600 = sigmaRelStdErr(600), neff = effectiveN(600, 0.9), se600c = sigmaRelStdErr(neff);
+  const pBG = cfg.comm.loss.pBG;
+  const seBG = Math.sqrt((pBG * (1 - pBG)) / 100);
+  const tLoss = b.lossRate > 0 ? 100 / (b.lossRate * cfg.comm.rate) : Infinity;
+  return (
+    <>
+      <Section id="why" title={{ ko: '회색 배지를 지우는 장', en: 'The chapter that removes the grey badges' }}>
+        <P ko="지금까지의 장에서 회색 **예시값** 배지가 붙은 숫자는 모두 '아직 모르는 값'이었습니다. 거리 측정 노이즈, 통신 지연, 손실률 같은 값은 논문에서 가져올 수 없습니다. 강당, 앵커 배치, 기체, 무선 환경마다 다르기 때문입니다. 이 장은 그 값들을 **날리기 전에 지상에서** 재는 절차 네 가지와, 잰 로그를 교재의 모델에 넣는 방법을 다룹니다."
+          en="Every number carrying a grey **example value** badge in the previous chapters was a value we do not know yet. Range noise, communication delay and loss rate cannot be taken from a paper: they differ with the hall, the anchor layout, the vehicles and the radio environment. This chapter gives four procedures for measuring them **on the ground, before flying**, and shows how to feed the logs into the textbook model." />
+        <P ko="무엇부터 재야 할까요? 아래 표는 예산에 크게 영향을 주는 예시값 설정을, **값이 2배가 되면 권장 최소 수평 간격이 얼마나 달라지는지**가 큰 순서로 늘어놓은 것입니다. 위쪽에 있는 값일수록 먼저, 더 정확히 재야 합니다."
+          en="What should be measured first? The table lists the example-valued settings that matter most for the budget, ordered by **how much the recommended minimum horizontal spacing changes when the value doubles**. The higher a value is in the table, the earlier and the more carefully it should be measured." />
+        <KeyTable />
+        <Derivation id="sensitivity" title={{ ko: '한 번에 하나씩 바꿔 보는 민감도', en: 'One-at-a-time sensitivity' }}>
+          <P ko="권장 최소 간격 $d_{\min}$ 은 전역 설정 $\theta_1, \theta_2, \dots$ 의 함수입니다(8장의 합계식). 설정 하나 $\theta_i$ 만 2배로 바꾸고 나머지는 그대로 둔 채 다시 계산해서 차이를 봅니다."
+            en="The recommended minimum spacing $d_{\min}$ is a function of the global settings $\theta_1, \theta_2, \dots$ (the total of chapter 8). Double one setting $\theta_i$, keep all others, recompute, and take the difference." />
+          <M block tex={String.raw`\Delta d_i \;=\; d_{\min}(\theta_1,\dots,2\theta_i,\dots) \;-\; d_{\min}(\theta_1,\dots,\theta_i,\dots)`} />
+          <P ko={`$\\Delta d_i$ 가 크면 그 값을 잘못 알았을 때 간격이 크게 틀린다는 뜻이므로 측정할 가치가 큽니다. 0 이면 지금 구성에서는 쓰이지 않는 값입니다(예: 측위 모드가 TDoA 이면 TWR 노이즈). 지금 설정의 권장 최소 수평 간격은 ${fix(b.minSepH, 3)} m{{der:ch9#sensitivity|지금 전역 설정으로 계산한 오차 예산의 합계|Total of the error budget with the current global settings}} 입니다. 이 방법은 다른 값과의 상호작용은 보지 못하므로 순서를 정하는 용도로만 씁니다.`}
+            en={`A large $\\Delta d_i$ means the spacing is badly off if that value is wrong, so it is worth measuring. Zero means the value is unused in the current configuration (e.g. TWR noise when the mode is TDoA). With the current settings the recommended minimum horizontal spacing is ${fix(b.minSepH, 3)} m{{der:ch9#sensitivity|지금 전역 설정으로 계산한 오차 예산의 합계|Total of the error budget with the current global settings}}. The method ignores interactions between values, so use it only to decide the order.`} />
+        </Derivation>
+        <Note>
+          <P ko="**아래 절차는 문헌이 아니라 조언입니다.** 기록 시간이나 표본 수처럼 절차에 나오는 숫자는 모두 예시값이고, 왜 그 정도인지는 유도에서 계산해 보입니다. Crazyflie 와 Crazyswarm2 에서 어떤 변수를 어떤 설정으로 기록하는지는 버전에 따라 달라지므로, 정확한 이름과 문법은 [Crazyswarm2 공식 문서](https://imrclab.github.io/crazyswarm2/)와 [ROS 2 공식 문서](https://docs.ros.org/)에서 확인하세요."
+            en="**The procedures below are advice, not literature.** Every number in them (recording time, sample count) is an example value, and the derivations show why that order of magnitude. Which variable to log with which configuration on the Crazyflie and Crazyswarm2 changes between versions; check the exact names and syntax in the [official Crazyswarm2 documentation](https://imrclab.github.io/crazyswarm2/) and the [official ROS 2 documentation](https://docs.ros.org/)." />
+        </Note>
+      </Section>
+
+      <Section id="static" title={{ ko: '실험 1 — 정지 노이즈', en: 'Experiment 1 — static noise' }}>
+        <P ko="기체를 움직이지 않게 세워 두면 참 위치는 변하지 않습니다. 그런데도 추정한 위치가 흔들린다면 그 흔들림은 전부 측위가 만든 것입니다. 가장 쉽고, 가장 먼저 해야 하는 실험입니다."
+          en="A vehicle that is fixed in place has a constant true position. If its estimated position still jitters, all of that jitter comes from positioning. This is the easiest experiment and the one to do first." />
+        <List ordered items={[
+          { ko: '앵커 좌표를 설정한 뒤(6장), 기체를 **좌표를 아는 지점**의 받침대나 삼각대 위에 고정합니다. 프로펠러는 돌리지 않습니다. 바닥에 내려놓지 말고 비행 고도 가까이 올리세요. TDoA 는 앵커가 둘러싼 공간 밖에서 급격히 나빠지는데{{lit:lps-docs/tdoa2-convex-hull}}, 바닥은 가장 낮은 앵커보다 아래여서 그 공간 밖이기 쉽습니다.', en: 'After setting the anchor coordinates (chapter 6), fix the vehicle on a stand or tripod at a **point with known coordinates**. Do not spin the propellers. Raise it near the flight height rather than leaving it on the floor: TDoA degrades quickly outside the volume enclosed by the anchors{{lit:lps-docs/tdoa2-convex-hull}}, and the floor is usually below the lowest anchor, i.e. outside.' },
+          { ko: '추정 위치를 지상 PC 에 기록합니다. Crazyswarm2 에서 온보드 측위를 쓸 때는 위치(pose) 로깅을 켜도록 안내하고 있고{{lit:crazyswarm2-docs/lps-supported}}, 로깅은 `crazyflies.yaml` 의 `firmware_logging` 에서 설정합니다{{lit:crazyswarm2-docs/multi-cf-config}}. 기본 주기는 10 Hz{{lit:crazyswarm2-docs/pose-topic-rate}} 입니다.', en: 'Log the estimated position on the ground PC. For onboard positioning Crazyswarm2 tells you to enable pose logging{{lit:crazyswarm2-docs/lps-supported}}; logging is configured under `firmware_logging` in `crazyflies.yaml`{{lit:crazyswarm2-docs/multi-cf-config}}. The default rate is 10 Hz{{lit:crazyswarm2-docs/pose-topic-rate}}.' },
+          { ko: '60 s{{ex}} 쯤 기록합니다. 기록하는 동안 사람은 기체와 앵커 사이에서 물러나 있습니다(사람 몸도 전파를 가립니다{{lit:util2022/nlos-obstacles}}).', en: 'Record for about 60 s{{ex}}. Keep people away from between the vehicle and the anchors while recording (a human body blocks the signal too{{lit:util2022/nlos-obstacles}}).' },
+          { ko: '축마다 직선을 맞춰 빼고(추세 제거), 남은 잔차의 표준편차 $\\hat\\sigma$ 와 직선의 기울기(드리프트)를 구합니다.', en: 'For each axis fit and subtract a line (detrending), then compute the standard deviation $\\hat\\sigma$ of the residual and the slope of the line (the drift).' },
+          { ko: '강당 가운데, 구석, 다른 높이처럼 두세 군데에서 되풀이합니다. 앵커 기하(2장의 DOP)가 지점마다 다르기 때문입니다.', en: 'Repeat at two or three places — centre, a corner, another height — because the anchor geometry (DOP, chapter 2) differs from point to point.' },
+        ]} />
+        <P ko="**어디에 쓰나.** 이 실험은 전역 설정을 직접 채우기보다 교재의 **예측을 검증**합니다. 예산이 예측하는 추정 오차 $\sigma_{\text{est}}$ 와 견주고, 맞지 않으면 측정 노이즈 설정을 역산합니다. 원시 거리나 거리차를 직접 기록할 수 있다면 실험 2 가 더 직접적입니다."
+          en="**What it fills.** Rather than filling a global setting directly, this experiment **checks the prediction** of the textbook: compare with the estimate error $\sigma_{\text{est}}$ predicted by the budget and, if they disagree, back-calculate the measurement-noise setting. If you can log raw ranges or range differences, experiment 2 is more direct." />
+        <PredictNumber id="ch9-n-for-sigma"
+          question={{ ko: '잰 σ 가 참값에서 ±10 % 안에 들게 하고 싶습니다(신뢰도는 1σ, 즉 세 번에 두 번쯤 맞는 수준). 서로 독립인 표본이 대략 몇 개 필요할까요?', en: 'You want the measured σ to be within ±10 % of the truth (at 1σ confidence, i.e. right about two times out of three). Roughly how many independent samples are needed?' }}
+          min={5} max={500} step={5} unit={tr({ ko: '개', en: 'samples' })} actual={n10} actualSrc={der('ch9#sigma-fit', { ko: 'n = 1 + 1/(2·0.1²)', en: 'n = 1 + 1/(2·0.1²)' })} tolerance={0.3}
+          explain={{
+            ko: `약 ${fmt(n10)}개{{der:ch9#sigma-fit}}면 됩니다. 핵심은 정밀도가 $1/\\sqrt{2(n-1)}$ 로만 좋아진다는 점입니다. ±5 % 로 줄이려면 표본이 4배(약 ${fmt(n5)}개{{der:ch9#sigma-fit}}) 필요합니다. 그리고 "서로 독립"이라는 조건이 실제 로그에서는 잘 지켜지지 않는다는 점이 아래 유도의 마지막 단계입니다.`,
+            en: `About ${fmt(n10)}{{der:ch9#sigma-fit}} are enough. The key point is that precision improves only as $1/\\sqrt{2(n-1)}$: halving the error to ±5 % takes four times the samples (about ${fmt(n5)}{{der:ch9#sigma-fit}}). And the condition "independent" is rarely met in a real log — the last step of the derivation below.`,
+          }} />
+        <Derivation id="sigma-fit" title={{ ko: 'σ 를 추정하는 식, 추세를 빼는 이유, 얼마나 오래 기록할까', en: 'Estimating σ, why detrend, and how long to record' }}>
+          <P ko="한 축의 로그를 $x_i$ ($i = 1,\dots,n$), 그 시각을 $t_i$ [s] 라 합시다. 세워 둔 기체의 로그를 이렇게 모델링합니다."
+            en="Let $x_i$ ($i = 1,\dots,n$) be the log of one axis and $t_i$ [s] its time stamps. We model the log of a parked vehicle as" />
+          <M block tex={String.raw`x_i \;=\; \underbrace{a}_{\tx{참 위치 + 고정 편향}{true position + fixed bias}} \;+\; \underbrace{b\,t_i}_{\tx{느린 드리프트}{slow drift}} \;+\; \underbrace{n_i}_{\tx{노이즈}{noise}},\qquad n_i \sim \mathcal N(0,\sigma^2)`} />
+          <P ko="**드리프트**(drift)는 값이 한쪽으로 천천히 흘러가는 현상이고 $b$ [m/s] 가 그 속도입니다. **추세 제거**(detrending)는 최소제곱 직선 $\hat a + \hat b\,t$ 를 맞춰서 빼는 일입니다. 남은 잔차 $r_i$ 의 **표본 표준편차**가 노이즈의 추정값입니다."
+            en="**Drift** is a slow creep of the value in one direction, $b$ [m/s] being its rate. **Detrending** means fitting the least-squares line $\hat a + \hat b\,t$ and subtracting it. The **sample standard deviation** of the residual $r_i$ is the noise estimate." />
+          <M block tex={String.raw`r_i = x_i - (\hat a + \hat b\,t_i),\qquad \hat\sigma = \sqrt{\frac{1}{n-1}\sum_{i=1}^{n} r_i^2}`} />
+          <P ko="(직선에 매개변수 두 개를 썼으니 엄밀히는 $n-2$ 로 나눠야 치우침이 없지만, $n$ 이 수백이면 차이가 $1/(2n)$ 수준이어서 이 교재와 손코딩 과제는 numpy 의 `ddof=1` 관례로 통일합니다.)"
+            en="(Two parameters went into the line, so strictly one should divide by $n-2$ for an unbiased value; with $n$ in the hundreds the difference is of order $1/(2n)$, so this textbook and the coding task stick to numpy’s `ddof=1` convention.)" />
+          <P ko="**왜 빼야 하나.** 빼지 않으면 직선 $b\,t$ 자체의 퍼짐이 더해집니다. 길이 $T$ 인 기록에서 $t$ 는 0 부터 $T$ 까지 고르게 퍼져 있고, 폭이 $T$ 인 균등분포의 분산은 $T^2/12$ 이므로"
+            en="**Why subtract.** Otherwise the spread of the line $b\,t$ itself is added. In a record of length $T$ the times are spread evenly over 0…$T$, and a uniform distribution of width $T$ has variance $T^2/12$, so" />
+          <M block tex={String.raw`\sigma_{\text{raw}}^2 \;=\; \sigma^2 + \frac{b^2 T^2}{12}`} />
+          <P ko="그냥 잰 σ 는 **기록 시간 $T$ 에 따라 달라집니다.** 센서의 성질일 수 없습니다. 그렇다고 드리프트를 버려도 된다는 뜻은 아닙니다. 노이즈는 평균 0 이라 필터가 줄여 주고 예산에서는 제곱합으로 더하지만, 드리프트는 필터가 못 걸러 내는 **편향**이라 예산에 그대로 더해집니다. 둘 다 적되, 다른 칸에 적어야 합니다."
+            en="The raw σ **depends on the recording time $T$** — it cannot be a property of the sensor. That does not mean drift may be discarded. Noise has zero mean, so the filter reduces it and the budget adds it in quadrature; drift is a **bias** the filter cannot remove, and the budget adds it linearly. Record both, in different lines." />
+          <P ko="**표준오차**(standard error)는 '추정값 자체가 실험마다 얼마나 들쭉날쭉한가'의 표준편차입니다. 노이즈가 정규분포이고 표본이 독립이면 $(n-1)\hat\sigma^2/\sigma^2$ 는 자유도 $n-1$ 인 카이제곱 분포를 따르고, 그 분산은 $2(n-1)$ 입니다. 따라서"
+            en="The **standard error** is the standard deviation of the estimate itself from one experiment to the next. For Gaussian noise and independent samples, $(n-1)\hat\sigma^2/\sigma^2$ follows a chi-square distribution with $n-1$ degrees of freedom, whose variance is $2(n-1)$. Hence" />
+          <M block tex={String.raw`\operatorname{Var}(\hat\sigma^2) = \frac{2\sigma^4}{n-1} \;\;\Rightarrow\;\; \operatorname{sd}(\hat\sigma) \approx \frac{\operatorname{sd}(\hat\sigma^2)}{2\sigma} = \frac{\sigma}{\sqrt{2(n-1)}}`} />
+          <P ko={String.raw`둘째 단계는 $\hat\sigma = \sqrt{\hat\sigma^2}$ 의 기울기 $1/(2\sigma)$ 를 곱한 것입니다(작은 변화의 1차 근사). 상대오차를 $\varepsilon$ 이하로 하려면 $1/\sqrt{2(n-1)} \le \varepsilon$, 즉 $n \ge 1 + 1/(2\varepsilon^2)$ 입니다. $\varepsilon$ = 10 % 이면 ${fmt(n10)}개{{der:ch9#sigma-fit}}, 5 % 이면 ${fmt(n5)}개{{der:ch9#sigma-fit}}.`}
+            en={String.raw`The second step multiplies by the slope $1/(2\sigma)$ of $\hat\sigma = \sqrt{\hat\sigma^2}$ (first-order approximation for small changes). For a relative error of at most $\varepsilon$ we need $1/\sqrt{2(n-1)} \le \varepsilon$, i.e. $n \ge 1 + 1/(2\varepsilon^2)$: ${fmt(n10)}{{der:ch9#sigma-fit}} samples for $\varepsilon$ = 10 %, ${fmt(n5)}{{der:ch9#sigma-fit}} for 5 %.`} />
+          <P ko={String.raw`**독립이 아닐 때.** 추정기의 출력은 필터를 거친 값이라 이웃한 표본끼리 닮아 있습니다. 이 닮은 정도가 **자기상관**(autocorrelation)이고, 바로 옆 표본과의 상관계수를 $\rho$ 라 합시다. 닮은 표본 10개는 독립인 표본 10개만큼의 정보를 주지 못합니다. 이웃 상관이 $\rho^k$ 꼴로 줄어드는 정규 잡음이면 $x^2$ 의 상관은 $\rho^{2k}$ 이고, 이를 모두 더하면 표본분산의 분산이 $(1+\rho^2)/(1-\rho^2)$ 배가 됩니다. 그만큼 표본 수가 줄어든 것으로 치면 됩니다.`}
+            en={String.raw`**When samples are not independent.** The estimator output has passed through a filter, so neighbouring samples resemble each other. That resemblance is the **autocorrelation**; let $\rho$ be the correlation with the next sample. Ten similar samples carry less information than ten independent ones. For Gaussian noise whose correlation decays as $\rho^k$, the correlation of $x^2$ is $\rho^{2k}$; summing these multiplies the variance of the sample variance by $(1+\rho^2)/(1-\rho^2)$ — equivalent to having fewer samples.`} />
+          <M block tex={String.raw`n_{\text{eff}} \;\approx\; n\,\frac{1-\rho^2}{1+\rho^2},\qquad \frac{\operatorname{sd}(\hat\sigma)}{\sigma} \approx \frac{1}{\sqrt{2\,(n_{\text{eff}}-1)}}`} />
+          <P ko={`숫자 예: 기본 주기 10 Hz{{lit:crazyswarm2-docs/pose-topic-rate}} 로 60 s{{ex}} 를 기록하면 $n$ = 600{{der:ch9#sigma-fit|10 Hz × 60 s|10 Hz × 60 s}}. 표본이 독립이면 불확실도는 ${fmt(se600 * 100, 2)} %{{der:ch9#sigma-fit}} 이지만, $\\rho$ = 0.9{{ex}} 이면 $n_{\\text{eff}}$ ≈ ${fmt(neff, 2)}{{der:ch9#sigma-fit}} 이 되어 ${fmt(se600c * 100, 2)} %{{der:ch9#sigma-fit}} 로 나빠집니다. 60 s 는 이런 경우에도 ±10 % 안쪽에 들게 하려는 예시값입니다. 여러분의 $\\rho$ 는 아래 데모가 로그에서 계산해 줍니다.`}
+            en={`Numbers: logging at the default 10 Hz{{lit:crazyswarm2-docs/pose-topic-rate}} for 60 s{{ex}} gives $n$ = 600{{der:ch9#sigma-fit|10 Hz × 60 s|10 Hz × 60 s}}. With independent samples the uncertainty is ${fmt(se600 * 100, 2)} %{{der:ch9#sigma-fit}}; with $\\rho$ = 0.9{{ex}}, $n_{\\text{eff}}$ ≈ ${fmt(neff, 2)}{{der:ch9#sigma-fit}} and it worsens to ${fmt(se600c * 100, 2)} %{{der:ch9#sigma-fit}}. The 60 s is an example value chosen to stay inside ±10 % even then. The demo below computes your $\\rho$ from the log.`} />
+        </Derivation>
+        <SigmaMc />
+        <Derivation id="static-check" title={{ ko: '세워 둔 기체의 흔들림은 비행 중 추정 오차와 같은가', en: 'Is the jitter of a parked vehicle the same as the in-flight estimate error?' }}>
+          <P ko="같지 않습니다. 5장의 필터는 '기체가 가속할 수 있다'고 가정하고(프로세스 노이즈), 그 가정 때문에 생기는 불확실성까지 포함한 것이 예산의 $\sigma_{\text{est}}$ 입니다. 세워 둔 기체는 실제로 가속하지 않으므로, 로그에 보이는 흔들림은 그중 **측정 노이즈가 필터를 지나 새어 나온 몫**뿐입니다. 정상상태 칼만 게인을 $K$, 상태 전이행렬을 $F$, 측정행렬을 $H$, 측정 노이즈 분산을 $R$ 이라 하면 추정 오차 $e$ 는"
+            en="No. The filter of chapter 5 assumes the vehicle may accelerate (process noise), and the budget’s $\sigma_{\text{est}}$ includes the uncertainty caused by that assumption. A parked vehicle does not accelerate, so the jitter in its log is only **the part of the measurement noise that leaks through the filter**. With steady-state Kalman gain $K$, transition matrix $F$, measurement matrix $H$ and measurement-noise variance $R$, the estimate error $e$ obeys" />
+          <M block tex={String.raw`e^{+} = \underbrace{(I - KH)\,F}_{A}\;e + K\,v,\quad v\sim\mathcal N(0,R) \;\;\Rightarrow\;\; \Sigma = A\,\Sigma\,A^{\mathsf T} + K R K^{\mathsf T},\quad \sigma_{\text{static}} = \sqrt{\Sigma_{pp}}`} />
+          <P ko={`둘째 식은 '한 스텝 지나도 분산이 그대로'라는 정상상태 조건이고, 반복해서 풉니다. 항상 $\\sigma_{\\text{static}} \\le \\sigma_{\\text{est}}$ 입니다. 지금 설정으로 강당 한가운데에서는 수평 ${fmt(pred.staticH * 100, 3)} cm{{der:ch9#static-check}} 대 ${fmt(b.sigmaEstH * 100, 3)} cm{{der:ch9#static-check|예산의 σ_est (5장의 정상상태 식)|σ_est of the budget (steady-state formula of chapter 5)}}, 수직 ${fmt(pred.staticV * 100, 3)} cm{{der:ch9#static-check}} 대 ${fmt(b.sigmaEstV * 100, 3)} cm{{der:ch9#static-check|예산의 σ_est (5장의 정상상태 식)|σ_est of the budget (steady-state formula of chapter 5)}} 입니다. 데모는 로그와 **같은 종류의 값**인 $\\sigma_{\\text{static}}$ 과 견주고, 둘이 같아지는 측정 노이즈 σ 를 이분법으로 찾아 줍니다(역산).`}
+            en={`The second equation is the steady-state condition (the variance is unchanged after one step) and is solved by iteration. Always $\\sigma_{\\text{static}} \\le \\sigma_{\\text{est}}$. With the current settings at the hall centre: horizontal ${fmt(pred.staticH * 100, 3)} cm{{der:ch9#static-check}} versus ${fmt(b.sigmaEstH * 100, 3)} cm{{der:ch9#static-check|예산의 σ_est (5장의 정상상태 식)|σ_est of the budget (steady-state formula of chapter 5)}}, vertical ${fmt(pred.staticV * 100, 3)} cm{{der:ch9#static-check}} versus ${fmt(b.sigmaEstV * 100, 3)} cm{{der:ch9#static-check|예산의 σ_est (5장의 정상상태 식)|σ_est of the budget (steady-state formula of chapter 5)}}. The demo compares the log with $\\sigma_{\\text{static}}$, the **same kind of quantity**, and finds by bisection the measurement noise σ that makes them equal (back-calculation).`} />
+          <P ko="이것은 교재의 개념 모델을 로그에 맞추는 일이지, Crazyflie 펌웨어의 필터를 재현하는 일이 아닙니다. 펌웨어의 추정기가 가정하는 측정 노이즈 표준편차의 기본값은 TDoA 0.15 m{{lit:cf-firmware-docs/tdoa-noise-std}}, TWR 0.25 m{{lit:cf-firmware-docs/twr-noise-std}} 이고, 여러분이 잰 값과 다를 수 있습니다."
+            en="This fits the conceptual model of the textbook to the log; it does not reproduce the filter in the Crazyflie firmware. The firmware estimator assumes default measurement-noise standard deviations of 0.15 m{{lit:cf-firmware-docs/tdoa-noise-std}} for TDoA and 0.25 m{{lit:cf-firmware-docs/twr-noise-std}} for TWR, which may differ from what you measure." />
+        </Derivation>
+      </Section>
+
+      <Section id="range" title={{ ko: '실험 2 — 앵커별 편향과 거리 노이즈', en: 'Experiment 2 — per-anchor bias and range noise' }}>
+        <P ko="추정 위치 대신 **원시 거리**(또는 거리차)를 기록하면 필터와 기하를 거치기 전의 값을 직접 볼 수 있습니다. 실제 거리를 알면 앵커마다의 **편향**도 나옵니다."
+          en="Logging **raw ranges** (or range differences) instead of the estimated position shows the values before the filter and the geometry. If the true distance is known, the **bias** of each anchor comes out as well." />
+        <List ordered items={[
+          { ko: '기체와 앵커 사이에 아무것도 없게 하고, 안테나에서 안테나까지의 거리를 줄자나 레이저 거리계로 잽니다.', en: 'With nothing between the vehicle and the anchors, measure the antenna-to-antenna distances with a tape or a laser meter.' },
+          { ko: '앵커별 거리 측정값을 기록합니다. 앵커마다 500개{{ex}} 쯤이면 σ 는 몇 % 안으로 정해지고, 이상치가 지금 설정의 NLOS 확률({{cfg:uwb.pNlos}})만큼 섞여 있을 때 수십 개가 모입니다.', en: 'Log the range measurements per anchor. About 500{{ex}} per anchor fixes σ to a few percent and collects a few dozen outliers when they occur with the NLOS probability of the current settings ({{cfg:uwb.pNlos}}).' },
+          { ko: '가까운 거리와 먼 거리에서 한 번씩 되풀이해, 편향이 거리에 따라 달라지는지 봅니다.', en: 'Repeat once at a short and once at a long distance to see whether the bias changes with distance.' },
+          { ko: '사람이 사이에 서 있는 조건으로 한 번 더 기록하면 NLOS(4장) 꼬리가 어떻게 생기는지 볼 수 있습니다.', en: 'Record once more with a person standing in between to see what the NLOS tail (chapter 4) looks like.' },
+          { ko: '앵커마다 평균·중앙값·σ·강건 σ·이상치 비율을 계산합니다.', en: 'Compute mean, median, σ, robust σ and outlier ratio for each anchor.' },
+        ]} />
+        <Derivation id="nlos-fit" title={{ ko: '편향, 강건한 σ, 꼬리에서 NLOS 모델 읽기', en: 'Bias, a robust σ, and reading the NLOS model off the tail' }}>
+          <P ko="앵커 $a$ 의 측정값을 $r_{a,i}$, 줄자로 잰 실제 거리를 $d_a$ 라 하면 편향은 평균과 실제 거리의 차입니다."
+            en="With measurements $r_{a,i}$ of anchor $a$ and the taped true distance $d_a$, the bias is the difference between mean and true distance." />
+          <M block tex={String.raw`\hat b_a = \bar r_a - d_a`} />
+          <P ko="평균은 이상치 몇 개에 끌려갑니다. 그래서 **중앙값**에서 벗어난 양의 중앙값인 **중앙절대편차**(MAD, median absolute deviation)로 '몸통'의 폭을 잽니다. 정규분포에서는 MAD 가 σ 의 0.6745배{{der:ch9#nlos-fit|표준정규분포의 75 % 분위수|75th percentile of the standard normal}}이므로"
+            en="A mean is dragged by a few outliers. So we measure the width of the 'core' with the **median absolute deviation** (MAD): the median of the distances from the **median**. For a normal distribution MAD is 0.6745{{der:ch9#nlos-fit|표준정규분포의 75 % 분위수|75th percentile of the standard normal}} times σ, hence" />
+          <M block tex={String.raw`\hat\sigma_{\text{rob}} = \frac{\operatorname{MAD}}{0.6745} = 1.4826\cdot\operatorname{median}_i\,\big|\,r_{a,i} - \operatorname{median}(r_a)\big|`} />
+          <P ko="4장의 모델은 확률 $p$ 로 평균 $m$ 인 지수분포 편향이 **더해진다**는 것이었습니다. 문턱 $c = 3\hat\sigma_{\text{rob}}$ 보다 큰 잔차만 봅시다. 지수분포는 '이미 $c$ 를 넘었다'는 조건을 걸어도 남은 양의 분포가 그대로라는 성질(무기억성)이 있어서, 넘은 것들의 평균 초과분이 곧 $m$ 이고 넘을 확률은 $p\,e^{-c/m}$ 입니다."
+            en="The model of chapter 4 **adds**, with probability $p$, an exponentially distributed bias of mean $m$. Look only at residuals above the threshold $c = 3\hat\sigma_{\text{rob}}$. An exponential distribution is memoryless — given that $c$ is already exceeded, the remaining excess has the same distribution — so the mean excess is $m$ and the probability of exceeding is $p\,e^{-c/m}$." />
+          <M block tex={String.raw`\hat m = \operatorname{mean}\big(r - c \;\big|\; r > c\big),\qquad \hat p = \big(q_{\text{out}} - 0.00135\big)\,e^{\,c/\hat m}`} />
+          <P ko="$q_{\text{out}}$ 은 문턱을 넘은 측정의 비율이고, 0.00135{{der:ch9#nlos-fit|표준정규분포가 +3σ 를 넘을 확률|Probability that a standard normal exceeds +3σ}} 는 NLOS 가 없어도 정규 잡음만으로 넘는 몫이라 빼 줍니다. 정규 잡음과 편향이 섞이는 효과를 무시한 **거친** 추정이므로, 문턱을 넘은 측정이 수십 개는 있어야 쓸 만합니다. 앵커마다 다른 고정 편향 $\hat b_a$ 의 제곱평균제곱근은 안테나 지연 보정 오차와 앵커 좌표 오차가 섞인 것으로, 6장의 앵커 측량 오차를 어림하는 데 씁니다."
+            en="$q_{\text{out}}$ is the share of measurements above the threshold; 0.00135{{der:ch9#nlos-fit|표준정규분포가 +3σ 를 넘을 확률|Probability that a standard normal exceeds +3σ}} is the share that Gaussian noise alone exceeds without any NLOS, so it is subtracted. This is a **rough** estimate that ignores the mixing of noise and bias; it needs a few dozen measurements above the threshold to be usable. The root mean square of the fixed per-anchor biases $\hat b_a$ mixes antenna-delay calibration error and anchor coordinate error, and serves as a rough figure for the anchor survey error of chapter 6." />
+        </Derivation>
+      </Section>
+
+      <Section id="latency" title={{ ko: '실험 3 — 왕복 지연', en: 'Experiment 3 — round-trip latency' }}>
+        <P ko="7장의 루프 지연에 들어가는 편도 통신 지연 $\tau_c$ 를 잽니다. 크기의 감을 잡자면, Crazyswarm 은 모션캡처 위치를 올려보내는 경로에서 49대일 때 약 26 ms{{lit:crazyswarm2017/latency}} 를 쟀고, 같은 구성의 기체 한 대에 대해서는 약 11 ms{{lit:util2022/latency}} 가 인용됩니다. 여러분의 UWB 구성에서 얼마인지는 재 봐야 압니다."
+          en="We measure the one-way communication delay $\tau_c$ that enters the loop delay of chapter 7. For scale: Crazyswarm measured about 26 ms{{lit:crazyswarm2017/latency}} with 49 vehicles on the path that sends motion-capture positions up, and about 11 ms{{lit:util2022/latency}} is quoted for a single vehicle in the same setup. What it is in your UWB setup must be measured." />
+        <Predict id="ch9-which-clock"
+          question={{ ko: 'PC 가 핑을 보낸 시각은 PC 로그에, 기체가 그 핑을 받은 시각은 기체 로그에 있습니다. "받은 시각 − 보낸 시각"을 계산하면 무엇이 나올까요?', en: 'The time the PC sent a ping is in the PC log; the time the vehicle received it is in the vehicle log. What does "receive time − send time" give?' }}
+          choices={[
+            { label: { ko: '편도 지연 그대로', en: 'The one-way delay itself' } },
+            { label: { ko: '편도 지연에, 알 수 없는 상수가 더해진 값 (게다가 천천히 변한다)', en: 'The one-way delay plus an unknown constant (which also changes slowly)' }, correct: true },
+            { label: { ko: '왕복 지연', en: 'The round-trip delay' } },
+          ]}
+          explain={{
+            ko: '두 시각은 **서로 다른 시계**로 찍혔습니다. 기체의 시계와 PC 의 시계는 0 으로 삼는 순간이 다르므로 그 차이(오프셋)가 그대로 더해지고, 두 시계가 가는 빠르기도 조금 달라서 오프셋이 천천히 변합니다. 오프셋은 재려는 지연보다 수천 배 클 수도, 음수일 수도 있습니다. 해결책은 시계를 맞추는 것이 아니라 **한 시계로 왕복을 재는 것**입니다. 아래 유도와 함정 실험실에서 확인하세요.',
+            en: 'The two stamps come from **different clocks**. The vehicle clock and the PC clock take different instants as zero, so that difference (the offset) is added in full, and they also tick at slightly different rates, so the offset changes slowly. The offset may be thousands of times larger than the delay you want, or negative. The remedy is not to align the clocks but to **time the round trip on one clock**. See the derivations and the pitfall lab below.',
+          }} />
+        <List ordered items={[
+          { ko: '지상 PC 의 프로그램이 **순번**(sequence number) $k = 0, 1, 2, \\dots$ 을 붙인 핑을 일정한 주기로 보내고, 보낸 순간의 시각 `t_send` 를 적습니다. 시각은 도중에 고쳐지지 않는 단조 시계로 재세요.', en: 'A program on the ground PC sends pings carrying a **sequence number** $k = 0, 1, 2, \\dots$ at a fixed rate and records the send time `t_send`. Use a monotonic clock that is never adjusted along the way.' },
+          { ko: '기체가 받은 순번을 그대로 되돌려 보내게 합니다. PC 는 메아리가 도착한 순간의 시각 `t_recv` 를 **같은 PC, 같은 시계**로 적습니다. 기체의 시계는 쓰지 않습니다.', en: 'Have the vehicle send the received number straight back. The PC records the arrival time of the echo, `t_recv`, on the **same PC and the same clock**. The vehicle clock is not used.' },
+          { ko: '실제 운용과 같은 조건에서 잽니다: 5대를 모두 켜고, 같은 채널과 같은 로그 설정으로.', en: 'Measure under operating conditions: all five vehicles on, same channel, same logging configuration.' },
+          { ko: '핑 1200개{{ex}} 쯤(20 Hz{{ex}} 로 60 s{{ex}})을 기록합니다. 95 % 분위수 위쪽에 60개{{der:ch9#latency-fit|1200 × 5 %|1200 × 5 %}} 가 남아야 꼬리가 보입니다.', en: 'Record about 1200{{ex}} pings (60 s{{ex}} at 20 Hz{{ex}}). That leaves 60{{der:ch9#latency-fit|1200 × 5 %|1200 × 5 %}} above the 95th percentile — enough to see the tail.' },
+          { ko: '왕복 시간의 절반을 편도 지연으로 삼아 평균과 분위수를 구합니다.', en: 'Take half the round-trip time as the one-way delay and compute its mean and percentiles.' },
+        ]} />
+        <Derivation id="clock-offset" title={{ ko: '서로 다른 시계를 빼면 무엇이 남나', en: 'What is left when you subtract two different clocks' }}>
+          <P ko="PC 시계가 가리키는 시각을 $t$ 라 하고, 기체 시계는 같은 순간에 $t' = (1+\epsilon)\,t + \theta$ 를 가리킨다고 합시다. $\theta$ [s] 는 두 시계의 **오프셋**, $\epsilon$ 은 빠르기의 차이(ppm 단위의 작은 수)입니다. PC 가 $t_{\text{send}}$ 에 보낸 핑이 $\tau$ 뒤에 기체에 도착하면 기체는"
+            en="Let $t$ be the PC clock reading and let the vehicle clock read $t' = (1+\epsilon)\,t + \theta$ at the same instant. $\theta$ [s] is the **offset** between the clocks and $\epsilon$ the rate difference (a small number, in ppm). A ping sent at $t_{\text{send}}$ arrives $\tau$ later, and the vehicle stamps" />
+          <M block tex={String.raw`t'_{\text{rx}} = (1+\epsilon)\,(t_{\text{send}} + \tau) + \theta \quad\Longrightarrow\quad t'_{\text{rx}} - t_{\text{send}} \;=\; \tau \;+\; \underbrace{\theta}_{\tx{모르는 상수}{unknown constant}} \;+\; \underbrace{\epsilon\,(t_{\text{send}} + \tau)}_{\tx{시간에 따라 자란다}{grows with time}}`} />
+          <P ko="을 적습니다. 빼서 나온 값은 지연 $\tau$ 가 아니라 $\tau + \theta + \epsilon t$ 입니다. 왕복에서는 메아리가 PC 에 도착한 시각 $t_{\text{recv}} = t_{\text{send}} + \tau_{\uparrow} + \tau_{\downarrow}$ 도 PC 시계로 적으므로, 빼면 $\theta$ 와 $\epsilon$ 이 **나타나지 않습니다**."
+            en="The difference is not the delay $\tau$ but $\tau + \theta + \epsilon t$. In a round trip the echo arrival $t_{\text{recv}} = t_{\text{send}} + \tau_{\uparrow} + \tau_{\downarrow}$ is also stamped on the PC clock, so $\theta$ and $\epsilon$ **never appear** in the difference." />
+          <P ko="1장에서 UWB 가 거리를 잴 때 쓴 것과 같은 요령입니다. 양방향 거리 측정도 두 장치의 시계를 맞추지 않고, 한쪽 시계로 잰 왕복 시간에서 상대의 응답 시간을 빼고 반으로 나눕니다{{lit:dstwr/ss-twr-formula}}."
+            en="It is the same trick UWB uses for ranging in chapter 1: two-way ranging does not align the two clocks either; it takes the round-trip time on one clock, subtracts the reply time of the other device and halves the result{{lit:dstwr/ss-twr-formula}}." />
+        </Derivation>
+        <Derivation id="latency-fit" title={{ ko: '왕복에서 편도로, 그리고 평균이 아니라 분위수', en: 'From round trip to one way — and percentiles rather than the mean' }}>
+          <P ko="핑 $i$ 의 **왕복 시간**(round-trip time)은 올라가는 지연과 내려오는 지연, 그리고 기체가 되돌려 보내는 데 쓴 시간의 합입니다."
+            en="The **round-trip time** of ping $i$ is the sum of the upward delay, the downward delay and the time the vehicle takes to turn the ping around." />
+          <M block tex={String.raw`T_i = t_{\text{recv},i} - t_{\text{send},i} = \tau_{\uparrow,i} + \tau_{\text{turn},i} + \tau_{\downarrow,i} \qquad\Longrightarrow\qquad \hat\tau_i = \tfrac{1}{2}\,T_i`} />
+          <P ko="절반으로 나누는 데에는 가정이 두 개 들어 있습니다. ① **대칭**: 오가는 길의 지연이 평균적으로 같다. ② 되돌리는 시간 $\tau_{\text{turn}}$ 은 무시할 만하다(알고 있다면 먼저 빼세요). 메아리가 주기적인 로그를 타고 돌아온다면 그 주기만큼의 기다림(0 부터 한 주기 사이)이 $\tau_{\text{turn}}$ 에 섞입니다. 예산은 방송 주기를 따로 더하므로(7장) 두 번 세지 않도록, 가능한 한 빠른 경로로 되돌려 보내세요."
+            en="Halving hides two assumptions. ① **Symmetry**: the two directions take equally long on average. ② The turnaround time $\tau_{\text{turn}}$ is negligible (if you know it, subtract it first). If the echo returns through a periodic log, the wait for the next period (between zero and one period) is mixed into $\tau_{\text{turn}}$. The budget adds the broadcast period separately (chapter 7), so to avoid counting it twice send the echo back by the fastest path available." />
+          <P ko="**왜 분위수인가.** 지연의 분포는 대개 한쪽으로 꼬리가 깁니다. 예산이 묻는 것은 '보통 얼마나 늦나'가 아니라 '늦을 때 얼마나 늦나'이므로 **분위수**(percentile)를 봅니다. $p_{95}$ 는 지연의 95 % 가 그보다 작은 값입니다. 교재의 모델은 지연을 '평균 ± 지터'로 쓰므로, 지터는 5 % 분위수와 95 % 분위수 사이 폭의 절반으로 잡습니다."
+            en="**Why percentiles.** Delay distributions usually have a long tail on one side. The budget does not ask how late it usually is but how late it is when it is late, so we look at **percentiles**: $p_{95}$ is the value below which 95 % of the delays fall. The textbook model writes the delay as 'mean ± jitter', so the jitter is taken as half the width between the 5th and 95th percentiles." />
+          <M block tex={String.raw`\bar\tau = \frac{1}{n}\sum_i \hat\tau_i,\qquad J = \frac{p_{95}(\hat\tau) - p_{5}(\hat\tau)}{2}`} />
+          <P ko="한 가지 주의: $\hat\tau_i$ 는 두 편도 지연의 **평균**이라서, 둘이 독립이면 편도 하나보다 표준편차가 $1/\sqrt2$ 배로 덜 흔들립니다. 지상국 중계에서는 예산에 들어가는 것이 '내려갔다 올라오는' 왕복 전체 $2(\bar\tau + J)$ 이므로 이 값이 꼭 맞습니다. 기체 간 직접 통신(P2P)에서는 편도 하나의 지터가 이보다 클 수 있으니 $J$ 를 넉넉히 잡으세요."
+            en="One caveat: $\hat\tau_i$ is the **mean** of two one-way delays, so if they are independent its standard deviation is $1/\sqrt2$ of a single leg. For the ground relay the budget uses the whole down-and-up round trip $2(\bar\tau + J)$, for which this value is exactly right. For direct (P2P) links the jitter of a single leg may be larger, so take $J$ generously." />
+        </Derivation>
+        <EstimatorLink />
+      </Section>
+
+      <Section id="loss" title={{ ko: '실험 4 — 패킷 손실', en: 'Experiment 4 — packet loss' }}>
+        <P ko="실험 3 의 로그에 답이 이미 들어 있습니다. 돌아오지 않은 핑은 로그에 줄이 없으므로, **빠진 순번**이 곧 손실입니다. Crazyswarm2 문서는 유니캐스트 패킷이 가끔 손실되는 것을 알려진 한계로 적고 있습니다{{lit:crazyswarm2-docs/known-limitation}}. 얼마나 자주, 얼마나 몰아서 빠지는지는 재 봐야 압니다."
+          en="The log of experiment 3 already holds the answer. A ping that never returned has no row, so the **missing sequence numbers** are the losses. The Crazyswarm2 documentation lists occasional loss of unicast packets as a known limitation{{lit:crazyswarm2-docs/known-limitation}}. How often and in what bursts must be measured." />
+        <List ordered items={[
+          { ko: '실험 3 과 같은 로그를 씁니다. 첫 순번부터 마지막 순번까지를 훑어 받았으면 0, 빠졌으면 1 인 수열을 만듭니다.', en: 'Use the same log as experiment 3. Walk from the first to the last sequence number and build a sequence with 0 for received and 1 for missing.' },
+          { ko: '손실률 = 빠진 개수 ÷ 보낸 개수. 분모는 받은 개수가 아니라 **보낸** 개수입니다.', en: 'Loss rate = number missing ÷ number sent. The denominator is the number **sent**, not received.' },
+          { ko: '이웃한 두 칸을 차례로 보며 "받음→빠짐"과 "빠짐→받음"이 몇 번 일어났는지 셉니다.', en: 'Look at each pair of neighbours and count how often "received→missing" and "missing→received" occur.' },
+          { ko: '기체를 강당의 먼 구석에 두거나 사람이 가리는 조건에서도 한 번 재서, 가장 나쁜 경우를 봅니다.', en: 'Measure once more with the vehicle in a far corner or with a person in the way, to see the worst case.' },
+        ]} />
+        <Derivation id="loss-fit" title={{ ko: '전이 횟수에서 2상태 손실 모델로', en: 'From transition counts to the two-state loss model' }}>
+          <P ko="7장의 길버트-엘리엇 모델에서 가장 단순한 경우, 즉 Good 상태에서는 전혀 빠지지 않고 Bad 상태에서는 모두 빠지는 경우를 씁니다. 그러면 로그의 0 과 1 이 곧 상태입니다. 이웃한 쌍 가운데 앞이 0 인 것이 $N_G$ 개, 그중 뒤가 1 인 것이 $N_{GB}$ 개, 앞이 1 인 것이 $N_B$ 개, 그중 뒤가 0 인 것이 $N_{BG}$ 개라면"
+            en="We use the simplest case of the Gilbert–Elliott model of chapter 7: nothing is lost in Good and everything in Bad. Then the 0s and 1s of the log are the states. Among neighbouring pairs let $N_G$ start with 0, of which $N_{GB}$ end with 1; let $N_B$ start with 1, of which $N_{BG}$ end with 0. Then" />
+          <M block tex={String.raw`\hat p_{GB} = \frac{N_{GB}}{N_G},\qquad \hat p_{BG} = \frac{N_{BG}}{N_B},\qquad \tx{평균 연속 손실 길이}{mean burst length} = \frac{1}{\hat p_{BG}}`} />
+          <P ko="입니다. '그 상태에서 떠난 횟수 ÷ 그 상태에 있었던 횟수'이므로 확률의 정의 그대로입니다. 이렇게 구한 값을 7장의 정상상태 식에 넣으면 손실률 $p_{GB}/(p_{GB}+p_{BG})${{der:ch7#ge-stationary}} 이 로그의 손실률과 (끝점 효과를 빼면) 일치합니다."
+            en="These are simply 'times the state was left ÷ times the state was occupied'. Put into the stationary formula of chapter 7, the loss rate $p_{GB}/(p_{GB}+p_{BG})${{der:ch7#ge-stationary}} matches the loss rate of the log (up to end effects)." />
+          <P ko={`**얼마나 기록해야 하나.** $\\hat p_{BG}$ 는 빠진 패킷 $N_B$ 개에서 센 비율이므로 표준오차가 $\\sqrt{p(1-p)/N_B}$ 입니다. 지금 설정의 $p_{BG}$ = {{cfg:comm.loss.pBG}} 에서 빠진 패킷이 100개{{ex}} 이면 ±${fmt(seBG * 100, 2)} %p{{der:ch9#loss-fit|√(p(1−p)/100)|√(p(1−p)/100)}} 입니다. 지금 설정의 손실률 ${fmt(b.lossRate * 100, 3)} %{{der:ch7#ge-stationary}} 와 방송 주기 {{cfg:comm.rate}} 라면 100개가 빠지는 데 약 ${fmt(tLoss, 2)} s{{der:ch9#loss-fit|100 ÷ (손실률 × 주기)|100 ÷ (loss rate × rate)}} 가 걸립니다. 손실이 드물수록 오래 기록해야 합니다.`}
+            en={`**How long to record.** $\\hat p_{BG}$ is a proportion counted over the $N_B$ lost packets, so its standard error is $\\sqrt{p(1-p)/N_B}$. At the current $p_{BG}$ = {{cfg:comm.loss.pBG}} and 100{{ex}} lost packets that is ±${fmt(seBG * 100, 2)} percentage points{{der:ch9#loss-fit|√(p(1−p)/100)|√(p(1−p)/100)}}. With the current loss rate of ${fmt(b.lossRate * 100, 3)} %{{der:ch7#ge-stationary}} and a rate of {{cfg:comm.rate}}, losing 100 packets takes about ${fmt(tLoss, 2)} s{{der:ch9#loss-fit|100 ÷ (손실률 × 주기)|100 ÷ (loss rate × rate)}}. The rarer the loss, the longer the recording.`} />
+          <P ko="두 가지 한계가 있습니다. ① 로그에서는 '빠졌다'만 보이므로 Good 안의 드문 손실과 Bad 안의 드문 성공을 따로 가려낼 수 없습니다. 나쁜 구간 한가운데에서 패킷 하나가 우연히 통과하면 이 모델은 그것을 '구간이 끝났다'로 읽으므로, 긴 공백을 실제보다 드물게 봅니다. 그래서 데모는 로그에서 가장 긴 연속 손실을 함께 보여 줍니다. ② 핑은 올라가는 길이나 내려오는 길 **어느 쪽에서든** 빠질 수 있으므로, 잰 것은 왕복 손실입니다. 지상국 중계에서는 이웃 정보가 실제로 두 구간을 건너므로 이 값이 맞고, P2P 에서는 편도 손실보다 크게(안전한 쪽으로) 나옵니다."
+            en="Two limits. ① A log only shows 'missing', so rare losses inside Good and rare successes inside Bad cannot be separated. When one packet happens to get through in the middle of a bad stretch, this model reads it as the end of the stretch and so sees long gaps as rarer than they are. That is why the demo also shows the longest burst found in the log. ② A ping may be lost on **either** leg, so what you measure is the round-trip loss. For the ground relay neighbour information really crosses two hops, so this is the right value; for P2P it is larger than the one-way loss (on the safe side)." />
+        </Derivation>
+      </Section>
+
+      <Section id="csv" title={{ ko: '로그를 CSV 로 만들기', en: 'Turning logs into CSV' }}>
+        <P ko="데모는 세 가지 CSV 를 읽습니다. 형식은 아래와 같고, 같은 내용이 저장소의 `docs/CSV_FORMAT.md` 에도 있습니다."
+          en="The demo reads three kinds of CSV. The formats are as follows; the same content is in `docs/CSV_FORMAT.md` in the repository." />
+        <div class="table-wrap">
+          <table class="tbl" data-testid="ch9-format-table">
+            <thead><tr><th>{tr({ ko: '로그', en: 'Log' })}</th><th>{tr({ ko: '열 이름 (첫 줄)', en: 'Column names (first line)' })}</th><th>{tr({ ko: '뜻과 단위', en: 'Meaning and units' })}</th></tr></thead>
+            <tbody>
+              <tr><td><b>{tr({ ko: '① 정지', en: '① Static' })}</b></td><td><code>t,x,y,z</code></td><td><T ko="`t`: 시각 [s]. `x`,`y`,`z`: 추정 위치 [m], 앵커 좌표와 같은 좌표계(x, y 는 강당 바닥, z 는 위쪽)." en="`t`: time [s]. `x`,`y`,`z`: estimated position [m] in the same frame as the anchor coordinates (x, y on the hall floor, z up)." /></td></tr>
+              <tr><td><b>{tr({ ko: '② 거리', en: '② Range' })}</b></td><td><code>t,anchor_id,range_m</code></td><td><T ko="`t`: 시각 [s]. `anchor_id`: 앵커 번호(정수). `range_m`: 그 앵커까지 잰 거리 [m]. 거리차 로그라면 `anchor_id` 에 쌍 번호, `range_m` 에 거리차 [m]." en="`t`: time [s]. `anchor_id`: anchor number (integer). `range_m`: measured range to that anchor [m]. For range-difference logs put the pair number in `anchor_id` and the difference [m] in `range_m`." /></td></tr>
+              <tr><td><b>{tr({ ko: '③④ 지연·손실', en: '③④ Latency & loss' })}</b></td><td><code>seq,t_send,t_recv</code></td><td><T ko="`seq`: 핑의 순번(정수). `t_send`: 보낸 시각 [s]. `t_recv`: 메아리가 돌아온 시각 [s]. **두 시각은 같은 PC 의 같은 시계.** 돌아오지 않은 핑은 줄을 쓰지 않습니다." en="`seq`: sequence number of the ping (integer). `t_send`: send time [s]. `t_recv`: time the echo returned [s]. **Both on the same clock of the same PC.** Write no row for a ping that never returned." /></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <List items={[
+          { ko: '첫 줄(주석 제외)은 **열 이름**입니다. 대소문자는 구분하지 않고, 열 순서는 자유이며, 다른 열이 더 있어도 됩니다(무시합니다).', en: 'The first line (apart from comments) holds the **column names**. They are case-insensitive, may come in any order, and extra columns are allowed (ignored).' },
+          { ko: '구분자는 쉼표, 세미콜론, 탭 가운데 하나입니다(첫 줄을 보고 정합니다). 소수점은 마침표입니다.', en: 'The separator is a comma, a semicolon or a tab (decided from the first line). The decimal mark is a point.' },
+          { ko: '`#` 으로 시작하는 줄은 주석으로 건너뜁니다. 측정 날짜와 조건을 적어 두기 좋습니다.', en: 'Lines starting with `#` are comments and are skipped — a good place for the date and conditions of the measurement.' },
+          { ko: '시각의 단위는 **초**입니다. 0 에서 시작할 필요는 없지만(첫 값을 빼고 씁니다) 한 파일 안에서는 **하나의 시계**여야 합니다. 나노초나 밀리초로 적힌 값은 초로 바꿔서 넣으세요.', en: 'Time is in **seconds**. It need not start at 0 (the first value is subtracted), but one file must use **one clock**. Convert nanoseconds or milliseconds to seconds first.' },
+          { ko: '빈 칸이 있거나 숫자가 아닌 칸이 있는 줄은 **줄 전체를 건너뛰고** 건너뛴 줄 수를 화면에 알려 줍니다.', en: 'A row with an empty or non-numeric cell is **skipped entirely**, and the number of skipped rows is reported on screen.' },
+        ]} />
+        <h3>{tr({ ko: 'ROS 2 bag 에서 CSV 로', en: 'From a ROS 2 bag to CSV' })}</h3>
+        <P ko="Crazyswarm2 는 ROS 2 위에서 돌기 때문에{{lit:crazyswarm2-docs/ros2-based}}, 기체가 내려보낸 로그는 ROS 2 의 **토픽**(topic, 이름이 붙은 메시지 흐름)으로 나옵니다. 토픽을 파일에 받아 적은 것이 **bag** 입니다. 길은 세 걸음입니다. ① 실험하는 동안 필요한 토픽을 bag 으로 기록한다. ② bag 을 읽어 필요한 값만 꺼낸다. ③ 위 형식의 CSV 로 쓴다. 아래는 ②와 ③을 하는 짧은 Python 스크립트의 **예시**입니다."
+          en="Crazyswarm2 runs on ROS 2{{lit:crazyswarm2-docs/ros2-based}}, so the logs sent down by the vehicle appear as ROS 2 **topics** (named streams of messages). A **bag** is a file recording of topics. The route has three steps: ① record the needed topics to a bag during the experiment, ② read the bag and pull out the values, ③ write them as CSV in the format above. Below is an **example** of a short Python script for ② and ③." />
+        <p><Status kind="warn">{tr({ ko: '예시 — 여러분의 토픽 이름과 메시지 형식에 맞게 고치세요', en: 'Example — adapt it to your topic names and message types' })}</Status></p>
+        <CodeView code={ROS_EXAMPLE} />
+        <P ko="이 스크립트의 토픽 이름, 메시지의 필드 이름, 함수의 인자는 교재가 확인한 사실이 아니라 **자리 표시**입니다. ROS 2 배포판과 Crazyswarm2 버전에 따라 달라지므로 [ROS 2 공식 문서](https://docs.ros.org/)의 rosbag2 설명과 [Crazyswarm2 공식 문서](https://imrclab.github.io/crazyswarm2/)를 보고 맞추세요. 한 가지는 버전과 무관하게 중요합니다. bag 이 적는 시각은 **PC 가 메시지를 받은 시각**입니다. 정지 노이즈를 재는 데는 상관없지만, 그 시각을 '측정한 순간'으로 써서 지연을 계산하면 안 됩니다(5장의 함정)."
+          en="The topic name, message field names and function arguments in this script are **placeholders**, not facts verified by the textbook. They vary with the ROS 2 distribution and the Crazyswarm2 version; follow the rosbag2 pages of the [official ROS 2 documentation](https://docs.ros.org/) and the [official Crazyswarm2 documentation](https://imrclab.github.io/crazyswarm2/). One thing matters whatever the version: the time a bag records is the time **the PC received the message**. That is fine for static noise, but it must not be used as the 'instant of measurement' to compute a delay (the trap of chapter 5)." />
+        <Derivation id="log-rate" title={{ ko: '로그 주기가 볼 수 있는 것을 정한다', en: 'The log rate decides what you can see' }}>
+          <P ko="초당 $f_s$ 번 기록한 로그에는 $f_s/2$ 보다 빠른 변화가 제대로 담기지 않습니다. 한 번 흔들리는 모양을 알아보려면 한 주기에 적어도 두 점이 필요하기 때문입니다. 이 한계 $f_s/2$ 를 **나이퀴스트 주파수**(Nyquist frequency)라 하고, 그보다 빠른 흔들림은 사라지는 것이 아니라 더 느린 흔들림인 척 섞여 들어옵니다. 이를 **에일리어싱**(aliasing)이라 합니다."
+            en="A log sampled $f_s$ times per second cannot properly hold variations faster than $f_s/2$: recognising one oscillation needs at least two points per period. The limit $f_s/2$ is the **Nyquist frequency**; faster wiggles do not vanish but fold back disguised as slower ones (aliasing)." />
+          <M block tex={String.raw`f_{\max} = \frac{f_s}{2}`} />
+          <P ko="기본 주기 10 Hz{{lit:crazyswarm2-docs/pose-topic-rate}} 에서는 5 Hz{{der:ch9#log-rate|10 Hz ÷ 2|10 Hz ÷ 2}} 보다 빠른 흔들림이 보이지 않습니다. σ 의 **크기**는 느리게 기록해도 바뀌지 않지만(표본을 띄엄띄엄 뽑아도 퍼짐은 같습니다), 흔들림이 빠른지 느린지는 알 수 없습니다. 지연 측정에는 더 치명적입니다. 메아리가 10 Hz 로그를 타고 돌아오면 시각이 100 ms{{der:ch9#log-rate|주기 = 1 ÷ 10 Hz|period = 1 ÷ 10 Hz}} 단위로 뭉개져 수십 ms 의 지연을 잴 수 없습니다. **실험하는 동안만이라도 로그 주기를 올리세요.** 다만 주기를 올리면 무선 채널을 그만큼 더 쓰므로, 5대를 동시에 띄울 때의 설정으로 되돌리는 것을 잊지 마세요."
+            en="At the default 10 Hz{{lit:crazyswarm2-docs/pose-topic-rate}} nothing faster than 5 Hz{{der:ch9#log-rate|10 Hz ÷ 2|10 Hz ÷ 2}} is visible. The **size** of σ does not change with slow logging (picking samples sparsely keeps the spread), but you cannot tell fast jitter from slow. For latency it is worse: an echo returning through a 10 Hz log has its time smeared in steps of 100 ms{{der:ch9#log-rate|주기 = 1 ÷ 10 Hz|period = 1 ÷ 10 Hz}}, so delays of tens of ms cannot be measured. **Raise the log rate at least for the experiment.** A higher rate uses more of the radio channel, so remember to restore the configuration you fly five vehicles with." />
+        </Derivation>
+      </Section>
+
+      <Section id="demo" title={{ ko: '내 로그를 넣어 보기', en: 'Try it with my own log' }}>
+        <P ko="파일을 고르거나 '샘플 불러오기'를 누르면 형식을 검사하고, 그래프와 표로 결과를 보여 준 뒤, 값마다 전역 설정에 반영할 수 있게 합니다. 샘플은 **지금 전역 설정**으로 이 브라우저 안에서 만든 합성 로그이므로, 피팅 결과가 설정값 근처로 돌아오는지를 보면 방법이 맞는지 확인할 수 있습니다."
+          en="Choose a file or press 'Load sample': the format is checked, the result is shown in charts and tables, and each value can be applied to the global settings. The samples are synthetic logs generated inside this browser from the **current global settings**, so seeing the fit return values near the settings confirms the method." />
+        <LogDemo />
+      </Section>
+
+      <Section id="task" title={{ ko: '직접 구현하기', en: 'Implement it yourself' }}>
+        <P ko="데모가 한 계산의 핵심 두 가지를 직접 써 봅니다. 왕복 로그에서 편도 지연과 손실률을, 정지 로그에서 추세를 뺀 σ 를 구합니다."
+          en="Write the two core computations of the demo yourself: one-way delay and loss rate from a round-trip log, and the detrended σ from a static log." />
+        <CodeTask task={fitLogTask} />
+      </Section>
+
+      <Section id="pitfall" title={{ ko: '함정 실험실', en: 'Pitfall lab' }}>
+        <ClockPitfall />
+        <DriftPitfall />
+      </Section>
+
+      <Section id="next" title={{ ko: '측정값을 넣은 뒤', en: 'After the measurements are in' }}>
+        <P ko="측정값을 넣을 때마다 화면 아래의 오차 예산이 다시 계산됩니다. 데모의 '전역 설정에 반영' 대신, 이미 계산해 둔 값을 여기서 손으로 넣어도 됩니다."
+          en="Each time a measured value goes in, the error budget at the bottom of the screen is recomputed. Instead of the 'Apply to global settings' buttons of the demo you can also type values you have already computed here." />
+        <div class="controls">
+          <CfgSlider path={cfg.uwb.mode === 'twr' ? 'uwb.sigmaTwr' : 'uwb.sigmaTdoa'} />
+          <CfgSlider path="uwb.anchorSurveyError" />
+          <CfgSlider path="comm.delayMean" max={200} />
+          <CfgSlider path="comm.delayJitter" max={100} />
+        </div>
+        <StatRow>
+          <Stat label={{ ko: '권장 최소 수평 간격', en: 'Recommended minimum horizontal spacing' }} value={b.minSepH} unit="m" src={der('ch9#sensitivity', { ko: '지금 전역 설정으로 계산한 오차 예산의 합계(8장의 식)', en: 'Total of the error budget with the current global settings (formula of chapter 8)' })} status={b.spacingOk ? 'good' : 'bad'} />
+          <Stat label={{ ko: '권장 최소 수직 간격', en: 'Recommended minimum vertical spacing' }} value={b.minSepV} unit="m" src={der('ch9#sensitivity', { ko: '지금 전역 설정으로 계산한 오차 예산의 합계(8장의 식, 다운워시 포함)', en: 'Total of the error budget with the current global settings (formula of chapter 8, downwash included)' })} />
+          <Stat label={{ ko: '지금 대형 간격', en: 'Current formation spacing' }} value={cfg.formation.spacing} unit="m" src={{ kind: 'ex', field: 'formation.spacing' }} />
+        </StatRow>
+        <p>{b.spacingOk
+          ? <Status kind="good">{tr({ ko: '지금 대형 간격은 권장 최소 간격 이상입니다', en: 'The current formation spacing is at least the recommended minimum' })}</Status>
+          : <Status kind="bad">{tr({ ko: '지금 대형 간격이 권장 최소 간격보다 좁습니다', en: 'The current formation spacing is below the recommended minimum' })}</Status>}
+          {' '}<a href="#/report">{tr({ ko: '우리 시스템 리포트에서 전체 보기 →', en: 'See everything in our system report →' })}</a></p>
+        <Note>
+          <P ko="**기록해 둘 것.** 숫자만 남기면 다음 사람이 믿을 수 없습니다. 측정한 날짜와 장소, 앵커 배치(좌표), 측위 모드, 로그 주기, 기체 수, 기록 길이, 그리고 원본 로그 파일을 함께 보관하세요. CSV 의 `#` 주석 줄에 적어 두면 파일과 함께 다닙니다."
+            en="**What to keep.** Numbers alone cannot be trusted by the next person. Keep the date and place, the anchor layout (coordinates), the positioning mode, the log rate, the number of vehicles, the recording length and the original log files together. Written in `#` comment lines of the CSV, the notes travel with the file." />
+        </Note>
+      </Section>
+    </>
+  );
+}
+
+const def: ChapterDef = {
+  id: 9,
+  title: { ko: '우리 시스템 측정하기', en: 'Measuring our own system' },
+  lead: { ko: '회색 배지가 붙은 예시값은 모두 여러분이 직접 재서 바꿔야 하는 숫자입니다. 날리기 전에 지상에서 할 수 있는 네 가지 측정과, 그 로그에서 노이즈·지연·손실 모델을 맞춰 전역 설정에 넣는 방법을 다룹니다.', en: 'Every example value with a grey badge is a number you must measure and replace. This chapter covers four measurements you can do on the ground before flying, and how to fit the noise, delay and loss models from the logs into the global settings.' },
+  objectives: [
+    { ko: '정지 노이즈, 앵커별 편향, 왕복 지연, 패킷 손실을 지상에서 재는 절차를 설명하고, 얼마나 오래 기록해야 하는지 표준오차로 계산한다.', en: 'Describe ground procedures for static noise, per-anchor bias, round-trip latency and packet loss, and compute from the standard error how long to record.' },
+    { ko: '로그에서 추세를 뺀 σ, 편도 지연의 평균과 분위수, 2상태 손실 모델의 전이 확률을 추정한다.', en: 'Estimate the detrended σ, the mean and percentiles of the one-way delay, and the transition probabilities of the two-state loss model from a log.' },
+    { ko: '서로 다른 시계의 시각을 빼면 안 되는 이유와, 드리프트가 노이즈가 아닌 이유를 설명한다.', en: 'Explain why time stamps from different clocks must not be subtracted, and why drift is not noise.' },
+  ],
+  Body,
+  budget: {
+    items: [],
+    get note(): L {
+      const b = budget.value;
+      return {
+        ko: `이 장은 예산에 새 항목을 더하지 않습니다. 대신 지금까지의 항목에 들어간 **예시값 입력을 여러분의 측정값으로 바꿉니다.** 예산의 식은 그대로이고 입력만 달라집니다. 지금 설정으로 계산한 권장 최소 간격은 수평 ${fix(b.minSepH, 3)} m, 수직 ${fix(b.minSepV, 3)} m{{der:ch9#sensitivity|지금 전역 설정으로 계산한 오차 예산의 합계(8장의 식)|Total of the error budget with the current global settings (formula of chapter 8)}} 입니다. 측정값을 넣은 결과는 [우리 시스템 리포트](#/report)에서 한 장으로 볼 수 있습니다.`,
+        en: `This chapter adds no new item. Instead it **replaces the example inputs behind the existing items with your measurements.** The formulas of the budget stay the same; only the inputs change. With the current settings the recommended minimum spacing is ${fix(b.minSepH, 3)} m horizontally and ${fix(b.minSepV, 3)} m vertically{{der:ch9#sensitivity|지금 전역 설정으로 계산한 오차 예산의 합계(8장의 식)|Total of the error budget with the current global settings (formula of chapter 8)}}. The result with your measurements is on one page in [our system report](#/report).`,
+      };
+    },
+  },
+  summary: [
+    { ko: '세워 둔 기체의 로그에서 직선을 빼고 남은 표준편차가 노이즈이고, 직선의 기울기는 드리프트(편향)다. σ 의 불확실도는 $1/\\sqrt{2(n-1)}$ 이라 ±10 % 에는 독립 표본 50여 개가 필요하다.', en: 'In the log of a parked vehicle, the standard deviation left after removing a line is the noise and the slope of the line is drift (a bias). The uncertainty of σ is $1/\\sqrt{2(n-1)}$, so ±10 % needs some fifty independent samples.' },
+    { ko: '지연은 한 시계로 왕복을 재서 반으로 나눈다. 서로 다른 시계를 빼면 알 수 없는 오프셋이 그대로 섞인다. 예산에는 평균이 아니라 분위수가 필요하다.', en: 'Measure delay as half a round trip on one clock; subtracting different clocks mixes in an unknown offset. The budget needs percentiles, not the mean.' },
+    { ko: '빠진 순번에서 손실률과 전이 확률을 세면 7장의 손실 모델이 채워진다. 잰 값을 넣으면 예산의 식은 그대로인 채 권장 간격이 여러분의 시스템 값으로 바뀐다.', en: 'Counting missing sequence numbers gives the loss rate and transition probabilities of the chapter 7 model. With the measured values in, the budget formulas stay and the recommended spacing becomes that of your system.' },
+  ],
+  next: { ko: '이제 숫자는 모두 여러분의 것입니다. 강당, 앵커 배치, 측정한 노이즈와 지연을 한 장에 모으면 무엇이 보일까요? 대형 간격은 충분한가요, 지연 여유는 몇 배인가요? 마지막 페이지 [우리 시스템 리포트](#/report)에서 확인하고 인쇄해 가세요.', en: 'All the numbers are now yours. What do you see when the hall, the anchor layout and the measured noise and delay come together on one page? Is the formation spacing sufficient, and how many times over is the delay margin? Check it on the last page, [our system report](#/report), and print it.' },
+  tasks,
+};
+export default def;
