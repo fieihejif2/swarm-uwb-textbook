@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'preact/hooks';
 import type { ChapterDef } from '../../app/chapters';
 import { L, fmt, tr } from '../../app/i18n';
 import { budget, config } from '../../app/store';
-import { compareGatedFixes, footprintSpan, gateMonteCarlo, obstacleBox, rangeErrorPdf, sampleRangeErrors, sampleTdoaErrors, tdoaErrorPdf } from '../../sim/ch4_nlos';
+import { compareGatedFixes, footprintSpan, gateMonteCarlo, obstacleBox, rangeErrorPdf, sampleRangeErrors, sampleTdoaErrors, tdoaErrorPdf, tdoaTwoPathGateStats, twoSidedTail } from '../../sim/ch4_nlos';
 import type { SystemConfig } from '../../sim/config';
 import { FusionParams, simulateFusion } from '../../sim/fusion';
 import type { Vec } from '../../sim/linalg';
@@ -19,9 +19,11 @@ import { gatedUpdateTask, tasks } from './tasks';
 const MODEL = der('ch4#nlos-positive', { ko: '이 장의 오차 모델 e = n + b (n 은 가우스, b 는 가려진 경로에서만 생기는 지수분포)로 만든 합성 표본', en: 'Synthetic samples from this chapter’s error model e = n + b (Gaussian n; exponential b only on a blocked path)' });
 const FIXSRC = der('ch4#gate', { ko: '합성 측정 한 바퀴를 가우스-뉴턴으로 푼 위치 400개. 게이트는 예측 위치 기준 ν²/S ≤ k²', en: '400 positions solved by Gauss–Newton from synthetic measurement rounds; gate ν²/S ≤ k² around the predicted position' });
 const SEFF = der('ch4#sigma-eff', { ko: '게이트를 통과한 오차의 분포를 수치 적분한 값', en: 'Numerical integration over the distribution of errors that pass the gate' });
-const FUS = der('ch4#gate', { ko: '5장의 UWB + IMU 필터 모델을 이 조건으로 시뮬레이션한 결과', en: 'The UWB + IMU filter model of chapter 5 simulated under this condition' });
+const FUS = der('ch5#ekf', { ko: '5장의 UWB + IMU 필터 모델(확장 칼만 필터)을 이 조건으로 시뮬레이션한 결과', en: 'The UWB + IMU filter model of chapter 5 (extended Kalman filter) simulated under this condition' });
 const LOCAL = { ko: '이 데모에서만 바꾸는 값. 처음 값은 전역 설정입니다.', en: 'Local to this demo; starts from the global setting.' };
+/** 후버 문턱 c_H. 5장 필터 엔진(fusion.ts → nlos.ts huberWeight)의 기본값과 같아야 한다. */
 const HUBER_C = 1.5;
+const PRESET = ex(undefined, { ko: '현상을 보여 주려고 고른 값입니다. 위 슬라이더로 바꿀 수 있습니다.', en: 'Values chosen to show the effect; change them with the sliders above.' });
 
 /** 지금 측위 모드의 측정 노이즈 σ [m] 와 그 설정 경로 */
 const sigmaOf = (cfg: SystemConfig, mode: 'twr' | 'tdoa' = cfg.uwb.mode) =>
@@ -78,14 +80,14 @@ function Scatter({ title, pts, lim, square, src, testId }: { title: L; pts: Vec[
 /** 옆에서 본 그림: 앵커 → 태그 직선과 장애물의 높이 */
 function SideView({ idx, a, p, boxes, blocked, hallZ }: { idx: number; a: Vec; p: Vec; boxes: Box[]; blocked: boolean; hallZ: number }) {
   const [ref, width] = useWidth<HTMLDivElement>();
-  const W = Math.max(width, 220), H = 132;
-  const m = { l: 40, r: 30, t: 14, b: 34 };
+  const W = Math.max(width, 220), H = 142;
+  const m = { l: 46, r: 44, t: 16, b: 42 };
   const iw = W - m.l - m.r, ih = H - m.t - m.b;
   const D = Math.max(Math.hypot(p[0] - a[0], p[1] - a[1]), 0.01);
   const sx = (d: number) => m.l + (d / D) * iw;
   const sz = (z: number) => m.t + ih - (z / hallZ) * ih;
   return (
-    <div ref={ref}>
+    <div ref={ref} class="plot">
       {width > 0 && (
         <svg width={W} height={H} role="img"
           aria-label={tr({ ko: `옆에서 본 모습: 앵커 A${idx}(높이 ${fmt(a[2])} m)에서 태그(높이 ${fmt(p[2])} m)까지의 직선 경로. ${blocked ? '장애물에 가려짐' : '가려지지 않음'}`, en: `Side view: straight path from anchor A${idx} (height ${fmt(a[2])} m) to the tag (height ${fmt(p[2])} m). ${blocked ? 'Blocked by an obstacle' : 'Not blocked'}` })}>
@@ -154,7 +156,8 @@ function ObstacleDemo() {
   const theoMean = mode === 'twr' ? (flags[s] ? bias : 0) : (selJ ? bias : 0) - (selI ? bias : 0);
 
   // 게이트 유무에 따른 위치 해 (무거우므로 조작이 멈춘 뒤 계산)
-  const key = useDebounced(JSON.stringify({ geo, mode, gateK, predSigma }), 160);
+  // 전역 값(σ, 편향)도 키에 넣어, 전역 슬라이더를 끄는 동안에는 무거운 위치 풀이(400회 × 2)를 미룬다
+  const key = useDebounced(JSON.stringify({ geo, mode, gateK, predSigma, bias, sT: cfg.uwb.sigmaTwr, sD: cfg.uwb.sigmaTdoa }), 200);
   const cmp = useMemo(() => {
     const d = JSON.parse(key) as { geo: Geo; mode: 'twr' | 'tdoa'; gateK: number; predSigma: number };
     const pp: Vec = [d.geo.tag[0], d.geo.tag[1], d.geo.tagZ];
@@ -164,7 +167,7 @@ function ObstacleDemo() {
     const off = st(r.off), on = st(r.on);
     const lim = Math.max(20, Math.ceil(quantile(r.off.map((v) => Math.max(Math.abs(v[0]), Math.abs(v[1])) * 100), 0.98) / 10) * 10);
     return { r, off, on, lim, k: d.gateK };
-  }, [key, cfg.anchors, cfg.uwb.sigmaTwr, cfg.uwb.sigmaTdoa, bias]);
+  }, [key, cfg.anchors]);
 
   // 끌기 + 방향키
   const toM = (e: PointerEvent, sc: PlanScale): [number, number] => {
@@ -206,7 +209,9 @@ function ObstacleDemo() {
   const pairOpts = pairs.map(([i, j], q) => ({ value: q, label: `d${j}−d${i} ${flags[i] || flags[j] ? '✕' : '✓'}` }));
   const sideIdx = mode === 'twr' ? [s] : [pi, pj];
   const gatedTitle = { ko: `게이트 켬 (k = ${fmt(cmp.k)})`, en: `Gate on (k = ${fmt(cmp.k)})` };
+  const pending = key !== JSON.stringify({ geo, mode, gateK, predSigma, bias, sT: cfg.uwb.sigmaTwr, sD: cfg.uwb.sigmaTdoa });
   return (
+    <>
     <Demo title={{ ko: '장애물을 놓으면 측정 분포가 바뀐다', en: 'Placing an obstacle changes the measurement distribution' }} testId="ch4-obstacle-demo">
       <P ko="강당을 위에서 본 그림입니다. 회색 상자(장애물)와 파란 원(태그 = 드론)을 **끌어서** 옮겨 보세요. 키보드로는 Tab 으로 고른 뒤 방향키(Shift 를 누르면 1 m 씩)로 옮깁니다. 앵커에서 태그까지의 직선이 상자를 지나면 그 경로는 NLOS 가 되고, 점선과 ✕ 로 표시됩니다."
         en="This is the hall seen from above. **Drag** the grey box (obstacle) and the blue circle (tag = drone). With the keyboard, Tab to one and use the arrow keys (Shift for 1 m steps). If the straight line from an anchor to the tag passes through a box, that path becomes NLOS and is drawn dashed with a ✕." />
@@ -291,9 +296,22 @@ function ObstacleDemo() {
         <Stat label={{ ko: 'LOS 의 σ', en: 'σ in LOS' }} value={sigma * 100} unit="cm" src={ex(sigmaPath)} />
       </StatRow>
 
-      <h3>{tr({ ko: '② 그 측정들로 위치를 풀면', en: '② Solving for position from those measurements' })}</h3>
-      <P ko="같은 측정 묶음을 두 가지로 풉니다. 왼쪽은 **전부** 써서, 오른쪽은 **게이트를 통과한 것만** 써서 2장의 가우스-뉴턴으로 풉니다. 게이트는 '필터가 예측한 위치'에서 계산한 예상 측정값과 실제 측정의 차이를 보고 판정합니다(아래 '마할라노비스 게이팅'에서 유도). 점 하나가 위치 해 하나의 수평 오차입니다."
-        en="The same measurement rounds are solved in two ways with the Gauss–Newton solver of chapter 2: on the left using **all** of them, on the right using **only those that pass the gate**. The gate compares each measurement with the value expected at the position the filter predicted (derived under 'Mahalanobis gating' below). Each dot is the horizontal error of one position fix." />
+    </Demo>
+    <Demo title={{ ko: '② 그 측정들로 위치를 풀면 (위 카드의 장애물 배치 그대로)', en: '② Solving for position from those measurements (with the obstacle layout of the card above)' }} testId="ch4-fix-demo">
+      <PlanView hall={hall} anchors={cfg.anchors} maxHeight={170} testId="ch4-fix-plan"
+        caption={tr({ ko: `읽기 전용 축소판: 장애물과 태그는 위 카드에서 옮깁니다. 지금 가려진 경로 ${blockedNames.length}개${blockedNames.length ? ` (${blockedNames.join(', ')})` : ''}.`, en: `Read-only miniature: move the obstacles and the tag in the card above. Blocked paths now: ${blockedNames.length}${blockedNames.length ? ` (${blockedNames.join(', ')})` : ''}.` })}>
+        {(sc) => (
+          <g pointer-events="none">
+            {boxes.map((bx, i) => <rect key={i} x={sc.sx(bx.min[0])} y={sc.sy(bx.max[1])} width={(bx.max[0] - bx.min[0]) * sc.k} height={(bx.max[1] - bx.min[1]) * sc.k} fill="var(--surface-3)" stroke="var(--text)" stroke-width="1.2" />)}
+            {cfg.anchors.map((a, i) => flags[i] && <line key={i} x1={sc.sx(a[0])} y1={sc.sy(a[1])} x2={sc.sx(p[0])} y2={sc.sy(p[1])} stroke="var(--critical)" stroke-width="1.5" stroke-dasharray="5 3" />)}
+            <circle cx={sc.sx(p[0])} cy={sc.sy(p[1])} r="6" fill="var(--series-1)" stroke="var(--surface)" stroke-width="1.5" />
+          </g>
+        )}
+      </PlanView>
+      <P ko="먼저 두 낱말만 정합니다(자세한 유도는 아래 '마할라노비스 게이팅'). **게이트**(gate)는 '예상과 $k$ 배 표준편차($k\sigma$)보다 더 다른 측정은 버린다'는 규칙이고, $k$ 를 **게이트 문턱**이라고 부릅니다. 여기서 '예상'은 필터가 직전 추정에서 예측해 둔 위치로 계산한 측정값입니다. 이 데모에는 필터가 없으므로, 참 위치에 축마다 표준편차 $\sigma_p$ 인 오차를 더한 **가짜 예측**을 매번 새로 만들어 씁니다. 그래서 $\sigma_p$ 가 클수록 '예상' 자체가 흐려집니다."
+        en="First two words (derived in 'Mahalanobis gating' below). A **gate** is the rule 'reject a measurement that differs from what was expected by more than $k$ standard deviations ($k\sigma$)'; $k$ is the **gate threshold**. 'Expected' means the measurement computed from the position the filter predicted from its previous estimate. This demo has no filter, so each time it makes a **stand-in prediction**: the true position plus an error of standard deviation $\sigma_p$ on each axis. The larger $\sigma_p$, the blurrier the expectation itself." />
+      <P ko="같은 측정 묶음을 두 가지로 풉니다. 왼쪽은 **전부** 써서, 오른쪽은 **게이트를 통과한 것만** 써서 2장의 가우스-뉴턴으로 풉니다. 점 하나가 위치 해 하나의 수평 오차입니다."
+        en="The same measurement rounds are solved in two ways with the Gauss–Newton solver of chapter 2: on the left using **all** of them, on the right using **only those that pass the gate**. Each dot is the horizontal error of one position fix." />
       <div class="controls">
         <Slider label={{ ko: '게이트 문턱 $k$', en: 'Gate threshold $k$' }} value={gateK} min={1} max={6} step={0.5} unit="σ" onChange={setGateK} src={ex('uwb.gateSigma', LOCAL)} testId="ch4-demo-k" />
         <Slider label={{ ko: '예측 위치의 불확실성 $\\sigma_p$ (축당)', en: 'Uncertainty of the predicted position $\\sigma_p$ (per axis)' }} value={predSigma} min={0.02} max={0.5} step={0.01} scale={100} unit="cm" onChange={setPredSigma} src={ex(undefined, { ko: '필터가 직전 추정에서 예측한 위치가 참값에서 벗어나는 정도(가정). 5장에서 실제 값을 구합니다.', en: 'How far the filter’s predicted position is from the truth (assumed). Chapter 5 computes the real value.' })} testId="ch4-pred-sigma" />
@@ -312,7 +330,9 @@ function ObstacleDemo() {
       </StatRow>
       <P ko="눈여겨볼 점 세 가지. (1) 가려진 앵커가 하나만 있어도 게이트 없는 해는 **한쪽으로 통째로 밀립니다**. 잡음처럼 평균해서 없앨 수 없는 오차입니다. (2) 게이트는 가려진 측정을 전부 잡지 못합니다. 편향이 작은 것은 정상 측정과 구별되지 않아 새어 들어옵니다. (3) 예측이 불확실할수록($\sigma_p$ 를 키워 보세요) 게이트가 넓어져 더 많이 샙니다. 좋은 예측이 있어야 게이트가 날카로워집니다."
         en="Three things to notice. (1) A single blocked anchor is enough to **shift the whole cloud to one side** without a gate. Unlike noise, this error does not average out. (2) The gate does not catch every blocked measurement: small biases look like normal measurements and leak through. (3) The more uncertain the prediction (raise $\sigma_p$), the wider the gate and the more leaks. A sharp gate needs a good prediction." />
+      {pending && <p class="small muted">{tr({ ko: '계산 중… (조작을 멈추면 다시 풉니다)', en: 'Computing… (re-solved once you stop adjusting)' })}</p>}
     </Demo>
+    </>
   );
 }
 
@@ -373,7 +393,7 @@ function GateDemo() {
     <LinkGroup>
       <Demo title={{ ko: '문턱 k 를 어디에 둘까', en: 'Where to put the threshold k' }} testId="ch4-gate-demo">
         <M block tex={String.raw`\lk{innov}{\nu = z - h(\hat x)},\qquad \lk{S}{S = H P H^{\mathsf T} + R},\qquad \lk{gate}{\frac{\nu^{2}}{S} \le k^{2}}\ \Rightarrow\ \tx{받아들인다}{accept}`} />
-        <p class="link-hint">{tr({ ko: '↑ 수식의 항을 가리키면 아래 코드의 줄과 그래프의 세로선이 함께 강조됩니다.', en: '↑ Point at a term to highlight the matching code lines and the vertical line in the charts.' })}</p>
+        <p class="link-hint">{tr({ ko: '↑ 수식의 항을 가리키면 아래 코드의 줄(맨 아래에 접혀 있음)과 그래프의 세로선이 함께 강조됩니다.', en: '↑ Point at a term to highlight the matching code lines (folded at the bottom) and the vertical line in the charts.' })}</p>
         <P ko="아래 네 값은 전역 설정입니다. 여기서 바꾸면 오차 예산의 $\sigma_{\text{eff}}$ 가 함께 바뀝니다. 그래프는 '측정 오차 $e$ 에 대해 $|e| \le k\sigma$ 이면 통과'라는 가장 단순한 경우(예측이 정확해서 혁신이 곧 측정 오차인 경우)를 그린 것입니다."
           en="The four values below are global settings; changing them here changes $\sigma_{\text{eff}}$ in the error budget. The charts show the simplest case, 'accept if $|e| \le k\sigma$ for measurement error $e$' (the prediction is exact, so the innovation is the measurement error)." />
         <div class="controls">
@@ -410,7 +430,10 @@ function GateDemo() {
           refLines={[...kLine, { y: sigma * 100, label: { ko: 'LOS 만 있을 때의 σ', en: 'σ with LOS only' } }, { y: sweep.off.rmsAccepted * 100, label: { ko: '게이트 끔', en: 'gate off' }, slot: 6 }]}
           src={MC} testId="ch4-sigma-eff-chart" />
         <Caption>{tr({ ko: '왼쪽 끝(k 가 작음): σ_eff 는 작아 보이지만 LOS 측정까지 대부분 버린 결과입니다. 오른쪽 끝(k 가 큼): 아무것도 버리지 않아 "게이트 끔" 선에 다가갑니다. 쓸 만한 구간은 LOS 통과율이 100% 에 닿은 직후입니다.', en: 'Far left (small k): σ_eff looks small, but only because most LOS measurements were thrown away too. Far right (large k): nothing is rejected and the curve approaches the "gate off" line. The useful region is just after the LOS acceptance reaches 100%.' })}</Caption>
-        <CodeView code={gatedUpdateTask.solution} links={gatedUpdateTask.links} />
+        <details style={{ marginTop: '8px' }} data-testid="ch4-gate-code">
+          <summary style={{ cursor: 'pointer', fontWeight: 650 }}>{tr({ ko: '수식과 연결된 코드 보기 (아래 "손으로 짜 보기" 과제의 기준 구현입니다 — 먼저 풀어 보려면 열지 마세요)', en: 'Show the code linked to the formula (the reference solution of the "Code it yourself" task below — keep it closed if you want to try first)' })}</summary>
+          <CodeView code={gatedUpdateTask.solution} links={gatedUpdateTask.links} />
+        </details>
       </Demo>
     </LinkGroup>
   );
@@ -424,8 +447,8 @@ function fusionBase(cfg: SystemConfig): Omit<FusionParams, 'nlos' | 'gateK' | 'r
   };
 }
 const FUSION_NOTE = {
-  ko: '조건: 5장에서 만들 UWB + IMU 필터를 미리 빌려 씁니다. 드론이 강당 안을 20초{{ex}} 동안 돌고, 예측은 100 Hz{{lit:cf-firmware-docs/kalman-predict-rate}}, UWB 측정 한 바퀴는 25 Hz{{ex}}, 가속도계 잡음은 0.3 m/s²{{ex}} 입니다. 측위 방식과 σ 는 전역 설정을 따릅니다. Crazyflie 펌웨어를 재현한 것이 아닌 개념 모델입니다.',
-  en: 'Condition: we borrow the UWB + IMU filter that chapter 5 builds. The drone circles inside the hall for 20 s{{ex}}; prediction runs at 100 Hz{{lit:cf-firmware-docs/kalman-predict-rate}}, one UWB measurement round at 25 Hz{{ex}}, accelerometer noise 0.3 m/s²{{ex}}. Mode and σ follow the global settings. This is a concept model, not a reproduction of the Crazyflie firmware.',
+  ko: '조건: 5장에서 만들 UWB + IMU 필터를 미리 빌려 씁니다. 측위 방식, 측정 노이즈 σ, 필터가 가정하는 가속도 노이즈({{cfg:estimation.accelNoise}})는 전역 설정을 따릅니다. 나머지는 **이 데모의 고정 가정**이라 여기서 바꿀 수 없고 전역 설정과도 무관합니다: 드론이 강당 안을 20초{{ex}} 동안 돌고, UWB 측정 한 바퀴는 25 Hz{{ex}}(3장에서 구한 갱신율 대신, 계산을 가볍게 하려고 고정), 참값을 만드는 가속도계 잡음은 0.3 m/s²{{ex}} 입니다. 필터는 이보다 큰 가속도 노이즈를 가정하므로 예측을 실제보다 덜 믿고, 그만큼 게이트도 실제 혁신 분포 기준으로는 $k\\sigma$ 보다 조금 느슨합니다. 예측 주기는 펌웨어 **소스 코드 상수**와 같은 100 Hz{{lit:cf-firmware-docs/kalman-predict-rate}} 로 골랐을 뿐, 이 모델이 펌웨어를 재현하는 것은 아닙니다(개념 모델).',
+  en: 'Condition: we borrow the UWB + IMU filter that chapter 5 builds. The positioning mode, the measurement noise σ and the acceleration noise the filter assumes ({{cfg:estimation.accelNoise}}) follow the global settings. The rest are **fixed assumptions of this demo**: they cannot be changed here and are unrelated to the global settings. The drone circles inside the hall for 20 s{{ex}}; one UWB measurement round comes at 25 Hz{{ex}} (fixed to keep the computation light, instead of the rate found in chapter 3); the accelerometer noise used to generate the truth is 0.3 m/s²{{ex}}. The filter assumes a larger acceleration noise than that, so it trusts its prediction less than it could, and the gate is correspondingly a little looser than $k\\sigma$ measured against the real innovation distribution. The prediction period was simply set equal to the firmware **source-code constant** of 100 Hz{{lit:cf-firmware-docs/kalman-predict-rate}}; the model does not reproduce the firmware (a concept model).',
 };
 
 function RobustDemo() {
@@ -434,7 +457,8 @@ function RobustDemo() {
   const [bias, setBias] = useState(cfg.uwb.nlosBiasMean);
   const [seed, setSeed] = useState(2);
   const k = cfg.uwb.gateSigma > 0 ? cfg.uwb.gateSigma : 3;
-  const key = useDebounced(JSON.stringify({ pN, bias, seed }), 200);
+  // 전역 값도 키에 넣어, 전역 슬라이더를 끄는 동안에는 필터 시뮬레이션 3개를 미룬다
+  const key = useDebounced(JSON.stringify({ pN, bias, seed, mode: cfg.uwb.mode, sT: cfg.uwb.sigmaTwr, sD: cfg.uwb.sigmaTdoa, an: cfg.estimation.accelNoise, h: cfg.formation.height, k }), 250);
   const runs = useMemo(() => {
     const d = JSON.parse(key) as { pN: number; bias: number; seed: number };
     const base = { ...fusionBase(cfg), nlos: { sigma: sigmaOf(cfg).sigma, pNlos: d.pN, biasMean: d.bias }, seed: d.seed };
@@ -443,14 +467,14 @@ function RobustDemo() {
       simulateFusion({ ...base, gateK: k, robust: false }),
       simulateFusion({ ...base, gateK: 0, robust: true }),
     ];
-  }, [key, cfg.anchors, cfg.hall, cfg.uwb.mode, cfg.uwb.sigmaTwr, cfg.uwb.sigmaTdoa, cfg.estimation.accelNoise, cfg.formation.height, k]);
+  }, [key, cfg.anchors, cfg.hall]);
   const zs = Array.from({ length: 161 }, (_, i) => i * 0.05);
   const names: L[] = [
     { ko: '아무것도 안 함', en: 'Nothing' },
     { ko: `게이트 (k = ${fmt(k)})`, en: `Hard gate (k = ${fmt(k)})` },
-    { ko: `후버 가중 (c = ${HUBER_C})`, en: `Huber weight (c = ${HUBER_C})` },
+    { ko: `후버 가중 (c_H = ${HUBER_C})`, en: `Huber weight (c_H = ${HUBER_C})` },
   ];
-  const W = der('ch4#gate', { ko: '세 방법이 측정에 주는 가중치를 식 그대로 그린 것', en: 'The weight each method gives a measurement, plotted from the formulas' });
+  const W = der('ch4#huber', { ko: '세 방법이 측정에 주는 가중치를 식 그대로 그린 것(게이트는 1 또는 0, 후버는 1 또는 c_H/u)', en: 'The weight each method gives a measurement, plotted from the formulas (gate: 1 or 0; Huber: 1 or c_H/u)' });
   return (
     <Demo title={{ ko: '버리기, 덜 믿기, 그냥 믿기', en: 'Reject, trust less, or just trust' }} testId="ch4-robust-demo">
       <LineChart
@@ -462,8 +486,8 @@ function RobustDemo() {
           { name: names[2], x: zs, y: zs.map((z) => huberWeight(z, 1, HUBER_C)), slot: 3, dash: '7 4' },
         ]}
         yDomain={[-0.05, 1.1]} src={W} testId="ch4-weight-chart" />
-      <P ko="게이트는 문턱에서 가중치가 1 에서 0 으로 **뚝** 떨어집니다. 후버 가중은 문턱 $c$ 를 넘으면 $c/(|\nu|/\sqrt S)$ 로 **서서히** 줄입니다. 0 이 되지는 않으므로, 필터가 틀린 자리에 있을 때도 측정이 조금씩은 끌어당겨 줍니다. 아래에서 세 방법을 같은 비행, 같은 난수로 비교합니다."
-        en="The gate drops the weight from 1 to 0 **abruptly** at the threshold. The Huber weight decreases **gradually** as $c/(|\nu|/\sqrt S)$ beyond its threshold $c$. It never reaches 0, so even when the filter sits in the wrong place the measurements still pull it a little. Below, the three methods are compared on the same flight with the same random numbers." />
+      <P ko={`게이트는 문턱에서 가중치가 1 에서 0 으로 **뚝** 떨어집니다. 후버 가중은 문턱 $c_H$ 를 넘으면 $c_H/u$ 로 **서서히** 줄입니다. 0 이 되지는 않으므로, 필터가 틀린 자리에 있을 때도 측정이 조금씩은 끌어당겨 줍니다. 여기서 $c_H$ = ${HUBER_C}{{ex}} 는 5장 필터 엔진에 고정된 값이라 이 데모에서는 바꿀 수 없습니다. 아래에서 세 방법을 같은 비행, 같은 난수로 비교합니다.`}
+        en={`The gate drops the weight from 1 to 0 **abruptly** at the threshold. The Huber weight decreases **gradually** as $c_H/u$ beyond its threshold $c_H$. It never reaches 0, so even when the filter sits in the wrong place the measurements still pull it a little. Here $c_H$ = ${HUBER_C}{{ex}} is fixed in the filter engine of chapter 5 and cannot be changed in this demo. Below, the three methods are compared on the same flight with the same random numbers.`} />
       <div class="controls">
         <Slider label={{ ko: 'NLOS 발생 확률', en: 'NLOS probability' }} value={pN} min={0} max={0.4} step={0.01} scale={100} unit="%" onChange={setPN} src={ex('uwb.pNlos', LOCAL)} testId="ch4-robust-p" />
         <Slider label={{ ko: 'NLOS 편향 평균 $\\bar b$', en: 'Mean NLOS bias $\\bar b$' }} value={bias} min={0} max={1.5} step={0.05} scale={100} unit="cm" onChange={setBias} src={ex('uwb.nlosBiasMean', LOCAL)} testId="ch4-robust-b" />
@@ -471,6 +495,7 @@ function RobustDemo() {
       <div class="btn-row" style={{ marginBottom: '10px' }}>
         <Button onClick={() => setSeed(seed + 1)} testId="ch4-robust-seed">{tr({ ko: '다른 난수로 다시', en: 'Different random numbers' })}</Button>
         <Button onClick={() => { setPN(0.2); setBias(1.0); }}>{tr({ ko: '심한 NLOS 로 (20 %, 100 cm)', en: 'Severe NLOS (20 %, 100 cm)' })}</Button>
+        <SrcBadge src={PRESET} />
         <Button onClick={() => { setPN(cfg.uwb.pNlos); setBias(cfg.uwb.nlosBiasMean); }}>{tr({ ko: '설정값으로 되돌리기', en: 'Back to settings' })}</Button>
       </div>
       <LineChart
@@ -501,13 +526,13 @@ function GatePitfall() {
   const [busy, setBusy] = useState(false);
   const sigma = sigmaOf(cfg).sigma;
   const tag = JSON.stringify({ obstacle, pN, bias, mode: cfg.uwb.mode, sigma });
-  const key = useDebounced(JSON.stringify({ obstacle, k, pN, bias, seed }), 200);
+  const key = useDebounced(JSON.stringify({ obstacle, k, pN, bias, seed, mode: cfg.uwb.mode, sigma, an: cfg.estimation.accelNoise, h: cfg.formation.height }), 250);
   const prm = (d: { obstacle: boolean; pN: number; bias: number }, gateK: number, sd: number): FusionParams =>
     ({ ...fusionBase(cfg), nlos: { sigma, pNlos: d.obstacle ? d.pN : 0, biasMean: d.bias }, gateK, robust: false, seed: sd });
   const runs = useMemo(() => {
     const d = JSON.parse(key) as { obstacle: boolean; k: number; pN: number; bias: number; seed: number };
     return { cur: simulateFusion(prm(d, d.k, d.seed)), ref: simulateFusion(prm(d, 3, d.seed)), k: d.k };
-  }, [key, cfg.anchors, cfg.hall, cfg.uwb.mode, sigma, cfg.estimation.accelNoise, cfg.formation.height]);
+  }, [key, cfg.anchors, cfg.hall]);
   const rej = runs.cur.total ? runs.cur.rejected / runs.cur.total : 0;
   const run = () => {
     setBusy(true);
@@ -537,7 +562,8 @@ function GatePitfall() {
       <div class="btn-row" style={{ margin: '8px 0 10px' }}>
         <Button onClick={() => { setObstacle(true); setK(0); }} testId="ch4-pitfall-off">{tr({ ko: '함정 ①: 게이트 끄기', en: 'Trap ①: gate off' })}</Button>
         <Button onClick={() => { setObstacle(true); setK(0.5); }} testId="ch4-pitfall-tight">{tr({ ko: '함정 ②: 바짝 조이기 (k = 0.5)', en: 'Trap ②: very tight (k = 0.5)' })}</Button>
-        <Button onClick={() => setK(3)}>{tr({ ko: '보통 쓰는 값 (k = 3)', en: 'A usual value (k = 3)' })}</Button>
+        <Button onClick={() => setK(3)}>{tr({ ko: '비교 기준 (k = 3)', en: 'Reference (k = 3)' })}</Button>
+        <SrcBadge src={PRESET} />
         <Button onClick={() => setSeed(seed + 1)}>{tr({ ko: '다른 난수로 다시', en: 'Different random numbers' })}</Button>
       </div>
       <LineChart
@@ -560,6 +586,7 @@ function GatePitfall() {
             : <Status kind="good">{tr({ ko: '이 실행에서는 잠기지 않았습니다.', en: 'No lock-out in this run.' })}</Status>}
       </p>
       <P class="muted small" ko={FUSION_NOTE.ko} en={FUSION_NOTE.en} />
+      <p class="small muted">{tr({ ko: '아래 단추를 누르면 그래프가 하나 그려집니다. 가로축은 게이트 문턱 k, 세로축은 20초 비행 한 번의 RMSE(위치 오차의 RMS, 0장의 통계 복습 참고, 로그 눈금)입니다. 같은 조건을 난수 7가지로 날려 가운데 값과 가장 나쁜 값을 그리고, 게이트를 끈 7번의 평균을 가로선으로 겹칩니다.', en: 'The button below draws one chart. Horizontal axis: gate threshold k; vertical axis: the RMSE of one 20 s flight (RMS of the position error, see the statistics review in chapter 0; log scale). The same condition is flown with seven random seeds; the median and the worst run are drawn, and the mean of seven gate-off runs is overlaid as a horizontal line.' })}</p>
       <Button primary onClick={run} disabled={busy} testId="ch4-pitfall-run">{busy ? tr({ ko: '계산 중…', en: 'Computing…' }) : tr({ ko: '▶ 문턱 k 를 바꿔 가며 RMSE 재기 (난수 7가지)', en: '▶ Measure RMSE across thresholds k (seven seeds)' })}</Button>
       {sweep && (
         <>
@@ -582,9 +609,9 @@ function GatePitfall() {
         title={{ ko: '같은 설정으로 반복했을 때의 RMSE 분포', en: 'Distribution of RMSE over repeated runs' }} experiment="fusion" metric="rmse" testId="ch4-mc" defaultRuns={100}
         params={prm({ obstacle, pN, bias }, k, 1)} xLabel={{ ko: '한 번의 비행에서 위치 RMSE [m]', en: 'Position RMSE of one flight [m]' }}
         threshold={{ value: 0.5, label: { ko: 'RMSE 가 0.5 m 를 넘은 비행 (잠김)', en: 'Flights with RMSE above 0.5 m (lock-out)' }, above: true }} src={FUS}
-        note={{ ko: '위 슬라이더의 조건(문턱 k, NLOS 확률, 편향)으로 난수만 바꿔 반복합니다. 0.5 m{{ex}} 는 "잠겼다"고 볼 기준으로 잡은 값입니다. k 를 1.5 ~ 2 로 두고 돌려 보세요. 대부분은 멀쩡하고 몇 번만 크게 틀립니다.', en: 'Repeats the condition of the sliders above (threshold k, NLOS probability, bias) with different random numbers. 0.5 m{{ex}} is the level we take to mean "locked out". Try k between 1.5 and 2: most runs are fine and a few are badly wrong.' }} />
-      <P ko="**대처.** (1) 문턱은 넉넉하게: 멀쩡한 측정을 버릴 확률이 1% 아래가 되는 $k \ge 2.6${{der:ch4#gate|2(1 − Φ(k)) ≤ 1% 를 풀면 k ≥ 2.58|Solving 2(1 − Φ(k)) ≤ 1% gives k ≥ 2.58}} 쪽에서 시작합니다. (2) 버린 비율을 감시해서, 너무 많이 버리고 있으면 게이트를 **열어 줍니다**. Crazyflie 의 TDoA 이상치 필터가 바로 이렇게 합니다. 좋은 표본의 비율을 계속 세다가 10% 아래로 떨어지면 필터를 열고, 90% 위로 올라오면 다시 닫습니다{{lit:cf-firmware-docs/tdoa-outlier-filter}}. (3) 딱 끊지 말고 덜 믿는 강건 갱신을 씁니다."
-        en="**What to do.** (1) Keep the threshold generous: start from $k \ge 2.6${{der:ch4#gate|2(1 − Φ(k)) ≤ 1% 를 풀면 k ≥ 2.58|Solving 2(1 − Φ(k)) ≤ 1% gives k ≥ 2.58}}, where the chance of rejecting a good measurement is below 1%. (2) Monitor the rejected fraction and **open** the gate when too much is being rejected. The Crazyflie TDoA outlier filter does exactly that: it keeps counting the share of good samples, opens the filter when it falls below 10% and closes it again above 90%{{lit:cf-firmware-docs/tdoa-outlier-filter}}. (3) Use a robust update that trusts less instead of cutting off." />
+        note={{ ko: '위 슬라이더의 조건(문턱 k, NLOS 확률, 편향)으로 난수만 바꿔 반복합니다. 히스토그램의 가로축은 비행 한 번의 RMSE, 세로축은 그런 비행의 수입니다. 0.5 m{{ex}} 는 "잠겼다"고 볼 기준으로 잡은 값이고, 세로 기준선보다 오른쪽에 있는 비행이 잠긴 비행입니다. k 를 1.5 ~ 2 로 두고 돌려 보세요. 대부분은 멀쩡하고 몇 번만 크게 틀립니다.', en: 'Repeats the condition of the sliders above (threshold k, NLOS probability, bias) with different random numbers. The histogram\'s horizontal axis is the RMSE of one flight and the vertical axis the number of such flights. 0.5 m{{ex}} is the level we take to mean "locked out"; flights to the right of that vertical line are locked out. Try k between 1.5 and 2: most runs are fine and a few are badly wrong.' }} />
+      <P ko="**대처.** (1) 문턱은 넉넉하게: 멀쩡한 측정을 버릴 확률을 1%{{ex}} 아래로 두기로 하면 $k \ge 2.6${{der:ch4#gate|2(1 − Φ(k)) ≤ 1% 를 풀면 k ≥ 2.58|Solving 2(1 − Φ(k)) ≤ 1% gives k ≥ 2.58}} 이고, 그쪽에서 시작합니다. (2) 버린 비율을 감시해서, 너무 많이 버리고 있으면 게이트를 **열어 줍니다**. Crazyflie 의 TDoA 이상치 필터가 바로 이렇게 합니다. 좋은 표본의 비율을 계속 세다가 10% 아래로 떨어지면 필터를 열고, 90% 위로 올라오면 다시 닫습니다{{lit:cf-firmware-docs/tdoa-outlier-filter}}. (3) 딱 끊지 말고 덜 믿는 강건 갱신을 씁니다."
+        en="**What to do.** (1) Keep the threshold generous: if you decide to keep the chance of rejecting a good measurement below 1%{{ex}}, that means $k \ge 2.6${{der:ch4#gate|2(1 − Φ(k)) ≤ 1% 를 풀면 k ≥ 2.58|Solving 2(1 − Φ(k)) ≤ 1% gives k ≥ 2.58}}; start from there. (2) Monitor the rejected fraction and **open** the gate when too much is being rejected. The Crazyflie TDoA outlier filter does exactly that: it keeps counting the share of good samples, opens the filter when it falls below 10% and closes it again above 90%{{lit:cf-firmware-docs/tdoa-outlier-filter}}. (3) Use a robust update that trusts less instead of cutting off." />
     </Pitfall>
   );
 }
@@ -598,15 +625,19 @@ function Body() {
   const rmsNlos = Math.sqrt(sigma * sigma + 2 * bias * bias);
   const tail = gatedErrorStats({ sigma, pNlos: 1, biasMean: bias }, 3);
   const off = gatedErrorStats(model, 0);
-  const rows = [1, 1.5, 2, 2.5, 3, 4].map((k) => ({ k, p: 2 * (1 - normCdf(k)) }));
+  const rows = [1, 1.5, 2, 2.5, 3, 4].map((k) => ({ k, p: twoSidedTail(k) }));
+  const two = tdoaTwoPathGateStats(model, cfg.uwb.gateSigma), twoOff = tdoaTwoPathGateStats(model, 0);
+  const huberKeep = 1 - twoSidedTail(HUBER_C);
+  const expX = Array.from({ length: 61 }, (_, i) => (i / 60) * 5 * bias * 100);
+  const TWO = '{{der:ch4#sigma-eff|TDoA 의 두 경로 섞임 모델로 위와 같은 적분을 수치로 계산한 값|The same integrals evaluated numerically with the two-path mixture model of TDoA}}';
   const G = der('ch4#gate', { ko: '2(1 − Φ(k)) 를 계산한 값', en: '2(1 − Φ(k)) evaluated' });
   return (
     <>
       <Section id="why" title={{ ko: '가려진 전파는 어떻게 되나', en: 'What happens to a blocked signal' }}>
         <P ko="3장까지는 UWB 측정 오차를 **평균이 0 인 가우스 잡음**으로 다뤘습니다. 앵커와 태그 사이가 훤히 뚫린 **가시선**(line of sight, LOS) 조건에서는 쓸 만한 가정입니다. 그런데 강당에는 기둥, 철제 캐비닛, 사람, 그리고 다른 드론이 있습니다. 직선 경로가 가려진 **비가시선**(non-line of sight, NLOS) 조건에서는 오차의 모양이 달라집니다. 평균이 0 에서 벗어나고(**편향**, bias), 가끔 터무니없이 큰 값이 섞입니다(**이상치**, outlier)."
           en="Up to chapter 3 we treated the UWB measurement error as **zero-mean Gaussian noise**. With a clear **line of sight** (LOS) between anchor and tag that is a usable assumption. But a hall contains pillars, steel cabinets, people and other drones. When the straight path is blocked, **non-line of sight** (NLOS), the error changes shape: its mean moves away from zero (a **bias**) and now and then an absurdly large value appears (an **outlier**)." />
-        <P ko="전파는 직선으로만 오지 않습니다. 벽과 바닥에 반사된 전파가 조금 늦게 함께 도착합니다. 이것을 **다중경로**(multipath)라고 합니다. 거리는 '가장 먼저 도착한 신호의 도착 시각'으로 재므로, 직선 경로가 살아 있는 동안에는 뒤따라오는 반사파가 큰 문제를 일으키지 않습니다. 문제는 직선 경로가 막혔을 때입니다."
-          en="Radio does not arrive along the straight line only. Reflections off walls and the floor arrive slightly later. This is **multipath**. Range is measured from the arrival time of the earliest signal, so as long as the straight path survives, the reflections that follow do little harm. The trouble starts when the straight path is blocked." />
+        <P ko="전파는 직선으로만 오지 않습니다. 벽과 바닥에 반사된 전파가 조금 늦게 함께 도착합니다. 이것을 **다중경로**(multipath)라고 합니다. 이 교재의 모델은 수신기가 거리를 '가장 먼저 도착한 신호의 도착 시각'으로 잰다고 둡니다(시각으로 거리를 재는 수신기의 일반적인 동작을 전제한 것이며, 특정 칩의 내부 동작을 옮긴 것은 아닙니다). 그러면 직선 경로가 살아 있는 동안에는 뒤따라오는 반사파가 큰 문제를 일으키지 않습니다. 문제는 직선 경로가 막혔을 때입니다."
+          en="Radio does not arrive along the straight line only. Reflections off walls and the floor arrive slightly later. This is **multipath**. The model of this textbook assumes the receiver measures range from the arrival time of the earliest signal (the general behaviour of a time-of-arrival receiver, not the internals of a particular chip). Then, as long as the straight path survives, the reflections that follow do little harm. The trouble starts when the straight path is blocked." />
         <Predict id="ch4-range-sign"
           question={{ ko: '앵커와 드론 사이에 철제 캐비닛이 끼어들었습니다. UWB 로 잰 거리는 실제 직선거리와 비교해 어떻게 될까요?', en: 'A steel cabinet gets between an anchor and the drone. How does the UWB range compare with the true straight-line distance?' }}
           choices={[
@@ -630,25 +661,35 @@ function Body() {
             en: '**Both are possible.** If the path to anchor $j$ is blocked, $d_j$ is measured too long and the difference **grows**; if the path to anchor $i$ is blocked, $d_i$ is measured too long and the difference **shrinks**. For a range the bias is always +, but for a range difference its sign depends on where the obstacle is. The derivation and demo below confirm it.',
           }} />
         <Derivation id="nlos-positive" title={{ ko: '왜 거리의 편향은 항상 +이고, 거리차의 편향은 ± 인가', en: 'Why a range bias is always + and a range-difference bias is ±' }}>
-          <P ko="앵커에서 태그까지의 참 직선거리를 $d$ [m], 전파 속도를 $c$ 라 합시다. 수신기가 잡은 첫 신호가 실제로 지나온 길의 길이를 $\ell$ 이라 하면, 잰 거리는 $\hat r = \ell + n$ 입니다($n$ 은 시각 측정 잡음을 거리로 바꾼 것)."
-            en="Let $d$ [m] be the true straight-line distance from anchor to tag and $c$ the propagation speed. If $\ell$ is the length of the path actually travelled by the first signal the receiver catches, the measured range is $\hat r = \ell + n$ ($n$ is the timing noise converted to distance)." />
+          <P ko="먼저 이 유도에 나오는 통계 기호입니다(낯설면 0장의 [통계 1분 복습](#/ch/0?a=stats)). $n \sim \mathcal N(0,\sigma^2)$ 는 '$n$ 은 평균 0, 표준편차 $\sigma$ 인 종 모양(가우스, 정규) 분포에서 뽑힌 값'이라는 뜻입니다. $\mathrm{Exp}(\tx{평균}{mean}\ \bar b)$ 는 **지수분포**: 0 이상의 값만 나오고, 0 근처가 가장 흔하며 클수록 드물어지는 분포입니다(아래 그림). $\mathbb E[\cdot]$ 는 평균(기대값), $\mathrm{Var}[\cdot]$ 는 분산입니다."
+            en="First the statistical symbols used here (if unfamiliar, see the [one-minute statistics review](#/ch/0?a=stats) in chapter 0). $n \sim \mathcal N(0,\sigma^2)$ means '$n$ is drawn from the bell-shaped (Gaussian, normal) distribution with mean 0 and standard deviation $\sigma$'. $\mathrm{Exp}(\tx{평균}{mean}\ \bar b)$ is the **exponential distribution**: only non-negative values, most common near 0 and rarer the larger they are (figure below). $\mathbb E[\cdot]$ is the mean (expected value) and $\mathrm{Var}[\cdot]$ the variance." />
+          <P ko="앵커에서 태그까지의 참 직선거리를 $d$ [m], 전파 속도를 $c$ 라 합시다. 수신기가 잡은 첫 신호가 실제로 지나온 길의 길이를 $\ell$ 이라 하면, 잰 거리는 2장과 같은 기호로 $\rho = \ell + n$ 입니다($n$ 은 시각 측정 잡음을 거리로 바꾼 것)."
+            en="Let $d$ [m] be the true straight-line distance from anchor to tag and $c$ the propagation speed. If $\ell$ is the length of the path actually travelled by the first signal the receiver catches, the measured range, with the symbol of chapter 2, is $\rho = \ell + n$ ($n$ is the timing noise converted to distance)." />
           <List items={[
             { ko: '**돌아서 오는 경우.** 직선 신호가 너무 약해져 수신기가 반사파를 첫 신호로 잡습니다. 두 점을 잇는 가장 짧은 길은 직선이므로 반사 경로는 반드시 $\\ell > d$ 입니다.', en: '**Detour.** The direct signal is too weak, so the receiver takes a reflection as the first signal. The straight line is the shortest path between two points, so a reflected path always has $\\ell > d$.' },
-            { ko: '**뚫고 오는 경우.** 나무나 플라스틱 같은 물질 속에서는 전파가 공기 중보다 느립니다. 같은 길이를 더 오래 걸려 지나므로, 시간을 $c$ 로 곱해 얻은 거리는 실제보다 깁니다. 역시 $\\ell > d$ 처럼 보입니다.', en: '**Passing through.** Inside materials such as wood or plastic, radio travels more slowly than in air. The same length takes longer, so time multiplied by $c$ gives a distance longer than the real one. Again it looks like $\\ell > d$.' },
+            { ko: '**뚫고 오는 경우.** 나무나 플라스틱 같은 물질 속에서는 전파가 공기 중보다 느립니다(전파의 일반적인 성질로 전제합니다. 이 교재가 따로 확인한 문헌 수치는 없습니다). 같은 길이를 더 오래 걸려 지나므로, 시간을 $c$ 로 곱해 얻은 거리는 실제보다 깁니다. 역시 $\\ell > d$ 처럼 보입니다.', en: '**Passing through.** Inside materials such as wood or plastic, radio travels more slowly than in air (taken as a general property of radio waves; this textbook has no verified literature figure for it). The same length takes longer, so time multiplied by $c$ gives a distance longer than the real one. Again it looks like $\\ell > d$.' },
           ]} />
           <P ko="두 경우 모두 추가 길이 $b = \ell - d$ 는 0 이상입니다. 30 cm 를 더 돌아오면 1 ns 늦게 도착합니다{{lit:dw1000/one-ns-30cm}}. 그래서 이 교재는 거리 오차를 다음 **모델**로 씁니다."
             en="In both cases the extra length $b = \ell - d$ is non-negative. A detour of 30 cm means arriving 1 ns late{{lit:dw1000/one-ns-30cm}}. This textbook therefore uses the following **model** for the range error." />
-          <M block tex={String.raw`e \;=\; \hat r - d \;=\; n + b,\qquad n \sim \mathcal N(0,\sigma^{2}),\qquad b \;\begin{cases} = 0 & \tx{LOS}{LOS}\\ \sim \mathrm{Exp}(\tx{평균}{mean}\ \bar b)\ \ge 0 & \tx{NLOS}{NLOS}\end{cases}`} />
+          <M block tex={String.raw`e \;=\; \rho - d \;=\; n + b,\qquad n \sim \mathcal N(0,\sigma^{2}),\qquad b \;\begin{cases} = 0 & \tx{LOS}{LOS}\\ \sim \mathrm{Exp}(\tx{평균}{mean}\ \bar b)\ \ge 0 & \tx{NLOS}{NLOS}\end{cases}`} />
           <P ko="$b$ 를 지수분포로 둔 것은 '작은 편향이 흔하고 큰 편향은 드물지만 꽤 멀리까지 나온다'는 성질을 가장 간단히 담기 위한 **가정**입니다. 실제 분포는 장애물의 재질과 배치에 따라 다릅니다. 가우스와 지수분포를 더한 이 분포를 **지수수정 가우스**(exponentially modified Gaussian, EMG)라고 합니다. 지수분포는 평균이 $\bar b$, 분산이 $\bar b^2$, 제곱의 평균이 $2\bar b^2$ 이므로 NLOS 경로에서는"
             en="Taking $b$ as exponential is an **assumption**, the simplest way to express 'small biases are common, large ones rare but reaching quite far'. The real distribution depends on the material and layout of the obstacles. The sum of a Gaussian and an exponential is the **exponentially modified Gaussian** (EMG). An exponential has mean $\bar b$, variance $\bar b^2$ and mean square $2\bar b^2$, so on an NLOS path" />
+          {bias > 0 && (
+            <LineChart
+              title={{ ko: `지수분포 Exp(평균 b̄) 의 모양 — 지금 b̄ = ${fmt(bias * 100, 3)} cm`, en: `Shape of the exponential distribution Exp(mean b̄) — now b̄ = ${fmt(bias * 100, 3)} cm` }}
+              xLabel={{ ko: '추가 길이 b [cm]', en: 'Extra length b [cm]' }} yLabel={{ ko: '확률밀도 [1/cm]', en: 'Probability density [1/cm]' }} height={180}
+              series={[{ name: { ko: '(1/b̄)·exp(−b/b̄)', en: '(1/b̄)·exp(−b/b̄)' }, x: expX, y: expX.map((v) => Math.exp(-v / (bias * 100)) / (bias * 100)), slot: 6, dash: '' }]}
+              refLines={[{ x: bias * 100, label: { ko: '평균 b̄', en: 'mean b̄' } }]}
+              src={der('ch4#nlos-positive', { ko: '지수분포의 밀도 식에 설정의 b̄ 를 넣어 그린 것', en: 'The exponential density with b̄ from the settings' })} testId="ch4-exp-chart" />
+          )}
           <M block tex={String.raw`\mathbb E[e] = \bar b,\qquad \mathrm{Var}[e] = \sigma^{2} + \bar b^{2},\qquad \sqrt{\mathbb E[e^{2}]} = \sqrt{\sigma^{2} + 2\bar b^{2}}`} />
           <P ko={`지금 설정({{cfg:${path}}}, {{cfg:uwb.nlosBiasMean}})으로는 NLOS 경로의 RMS 오차가 ${fmt(rmsNlos * 100, 3)} cm{{der:ch4#nlos-positive|√(σ² + 2b̄²)|√(σ² + 2b̄²)}} 로, LOS 의 ${fmt(rmsNlos / sigma, 2)}배{{der:ch4#nlos-positive|√(σ² + 2b̄²) / σ|√(σ² + 2b̄²) / σ}} 입니다. 더 중요한 것은 **꼬리**입니다. 오차가 $3\\sigma$ 를 넘을 확률은 LOS 에서 ${fmt(200 * (1 - normCdf(3)), 2)}%{{der:ch4#gate|2(1 − Φ(3))|2(1 − Φ(3))}} 인데 NLOS 경로에서는 ${fmt((1 - tail.acceptNlos) * 100, 3)}%{{der:ch4#sigma-eff|EMG 밀도를 |e| > 3σ 에서 적분한 값|The EMG density integrated over |e| > 3σ}} 입니다. 이렇게 가우스보다 먼 곳에 확률이 많이 남아 있는 분포를 **두꺼운 꼬리**(heavy tail)를 가졌다고 합니다.`}
             en={`With the current settings ({{cfg:${path}}}, {{cfg:uwb.nlosBiasMean}}) the RMS error on an NLOS path is ${fmt(rmsNlos * 100, 3)} cm{{der:ch4#nlos-positive|√(σ² + 2b̄²)|√(σ² + 2b̄²)}}, ${fmt(rmsNlos / sigma, 2)} times{{der:ch4#nlos-positive|√(σ² + 2b̄²) / σ|√(σ² + 2b̄²) / σ}} the LOS value. More important is the **tail**. The probability that the error exceeds $3\\sigma$ is ${fmt(200 * (1 - normCdf(3)), 2)}%{{der:ch4#gate|2(1 − Φ(3))|2(1 − Φ(3))}} in LOS but ${fmt((1 - tail.acceptNlos) * 100, 3)}%{{der:ch4#sigma-eff|EMG 밀도를 |e| > 3σ 에서 적분한 값|The EMG density integrated over |e| > 3σ}} on an NLOS path. A distribution that keeps this much probability far out, compared with a Gaussian, is said to have a **heavy tail**.`} />
-          <P ko="**TDoA 의 경우.** 2장에서 본 대로 TDoA 측정은 $z_{ij} = d_j - d_i$ 입니다. 태그는 두 앵커의 신호가 도착한 시각의 차를 재므로, 각 도착의 오차를 $e_i$, $e_j$ 라 하면"
-            en="**The TDoA case.** As in chapter 2, a TDoA measurement is $z_{ij} = d_j - d_i$. The tag measures the difference of the two arrival times, so with arrival errors $e_i$ and $e_j$," />
+          <P ko="**TDoA 의 경우.** 2장에서 본 대로 TDoA 는 거리차 $m_{ij}$ 를 재고, 그 참값은 $d_j - d_i$ 입니다. 태그는 두 앵커의 신호가 도착한 시각의 차를 재므로, 각 도착의 거리 오차를 $e_i$, $e_j$ 라 하면(위의 $e$ 를 앵커마다 쓴 것입니다. 2장의 단위벡터 $e_i$ 와는 다른 기호입니다) 거리차의 오차는 아래와 같습니다. **여기서부터 $\sigma$ 는 거리차 하나의 잡음 표준편차입니다.** 경로 하나의 잡음이 $\sigma_1$ 이면 두 잡음의 차 $n_j - n_i$ 는 $\sqrt2\,\sigma_1$ 이지만, 이 교재의 설정은 처음부터 거리차의 잡음 {{cfg:uwb.sigmaTdoa}} 를 $\sigma$ 로 둡니다."
+            en="**The TDoA case.** As in chapter 2, TDoA measures a range difference $m_{ij}$ whose true value is $d_j - d_i$. The tag measures the difference of the two arrival times, so with range errors $e_i$ and $e_j$ of the two arrivals (the $e$ above, written per anchor; not the unit vector $e_i$ of chapter 2) the error of the range difference is as below. **From here on $\sigma$ is the noise standard deviation of one range difference.** If one path has noise $\sigma_1$, the difference $n_j - n_i$ has $\sqrt2\,\sigma_1$, but the settings of this textbook give the noise of the range difference, {{cfg:uwb.sigmaTdoa}}, directly as $\sigma$." />
           <M block tex={String.raw`e_{ij} \;=\; e_j - e_i \;=\; \underbrace{(n_j - n_i)}_{\tx{잡음}{noise}\ \sim\,\mathcal N(0,\sigma^{2})} \;+\; \underbrace{b_j}_{\ge 0} \;-\; \underbrace{b_i}_{\ge 0}`} />
-          <P ko="$b_j$ 는 더해지고 $b_i$ 는 **빼집니다**. 앵커 $j$ 쪽만 가려지면 편향은 $+b_j$, 앵커 $i$ 쪽만 가려지면 $-b_i$ 입니다. 둘 다 가려지면 $b_j - b_i$ 로 일부가 상쇄되어 평균은 0 이지만 양쪽 꼬리가 모두 두꺼워집니다. ($\sigma$ 는 여기서 거리차의 잡음 표준편차입니다.)"
-            en="$b_j$ is added and $b_i$ is **subtracted**. If only the path to anchor $j$ is blocked the bias is $+b_j$; if only the path to anchor $i$ is blocked it is $-b_i$. With both blocked, $b_j - b_i$ partly cancels: the mean is zero but both tails are heavy. (Here $\sigma$ is the noise standard deviation of the range difference.)" />
+          <P ko="$b_j$ 는 더해지고 $b_i$ 는 **빼집니다**. 앵커 $j$ 쪽만 가려지면 편향은 $+b_j$, 앵커 $i$ 쪽만 가려지면 $-b_i$ 입니다. 둘 다 가려지면 $b_j - b_i$ 로 일부가 상쇄되어 평균은 0 이지만 양쪽 꼬리가 모두 두꺼워집니다."
+            en="$b_j$ is added and $b_i$ is **subtracted**. If only the path to anchor $j$ is blocked the bias is $+b_j$; if only the path to anchor $i$ is blocked it is $-b_i$. With both blocked, $b_j - b_i$ partly cancels: the mean is zero but both tails are heavy." />
         </Derivation>
         <h3>{tr({ ko: '무엇이 가리나', en: 'What does the blocking' })}</h3>
         <div class="table-wrap">
@@ -657,8 +698,8 @@ function Body() {
             <tbody>
               <tr>
                 <td><b>{tr({ ko: '기체 몸체', en: 'The vehicle body' })}</b></td>
-                <td><T ko="배터리, 모터, 기판이 안테나와 앵커 사이에 들어갑니다. 드론이 기울거나 돌면 가려지는 앵커가 바뀝니다. UWB 칩 자체에도 자세에 따라 달라지는 체계적 편향이 있다고 알려져 있습니다{{lit:util2022/nlos-bias-behaviour}}. 5대가 날면 **다른 드론**도 장애물입니다."
-                  en="The battery, motors and boards get between the antenna and an anchor. As the drone tilts or yaws, a different anchor is shadowed. The UWB chip itself is reported to have systematic biases that depend on pose{{lit:util2022/nlos-bias-behaviour}}. With five drones flying, **the other drones** are obstacles too." /></td>
+                <td><T ko="UWB 칩 자체에 자세에 따라 달라지는 체계적 편향이 있다고 보고되어 있습니다{{lit:util2022/nlos-bias-behaviour}}. 그 밖에 배터리, 모터, 기판이 안테나와 앵커 사이에 들어갈 수 있고, 드론이 기울거나 돌면 가려지는 앵커가 바뀔 수 있으며, 5대가 날면 **다른 드론**도 장애물이 될 수 있습니다(이 세 가지는 이 교재의 추정이며 문헌으로 확인하지 않았습니다)."
+                  en="The UWB chip itself is reported to have systematic biases that depend on pose{{lit:util2022/nlos-bias-behaviour}}. Beyond that, the battery, motors and boards may get between the antenna and an anchor, a tilt or yaw may change which anchor is shadowed, and with five drones flying **the other drones** may be obstacles too (these three are this textbook's expectation, not verified in the literature)." /></td>
                 <td><T ko="앵커를 위아래 여러 높이에 달아, 어느 자세에서도 보이는 앵커가 남게 합니다." en="Mount anchors at several heights, above and below, so that some remain visible in any attitude." /></td>
               </tr>
               <tr>
@@ -669,8 +710,8 @@ function Body() {
               </tr>
               <tr>
                 <td><b>{tr({ ko: '금속 구조물', en: 'Metal structures' })}</b></td>
-                <td><T ko="금속은 전파를 통과시키지 않고 반사합니다. 한 연구는 배치 설계에서 냉장고, 카운터, 자판기 같은 금속 물체를 심한 NLOS 를 일으키는 장애물로 다뤘습니다{{lit:arxiv-2412-12427/nlos-treatment}}. 고정된 장애물은 같은 궤적을 돌 때마다 **같은** 편향을 만들고, 심하면 측정이 아예 막힙니다{{lit:util2022/nlos-bias-behaviour}}."
-                  en="Metal does not let radio through; it reflects it. One study treated metal objects such as a fridge, a counter and a vending machine as severe-NLOS obstacles in its placement design{{lit:arxiv-2412-12427/nlos-treatment}}. A fixed obstacle produces the **same** bias every time the same trajectory is flown, and in severe cases the measurement is blocked altogether{{lit:util2022/nlos-bias-behaviour}}." /></td>
+                <td><T ko="금속은 전파를 거의 통과시키지 않고 반사합니다(전파의 일반적인 성질로 전제합니다). 한 연구는 배치 설계에서 냉장고, 카운터, 자판기 같은 금속 물체를 심한 NLOS 를 일으키는 장애물로 다뤘습니다{{lit:arxiv-2412-12427/nlos-treatment}}. 고정된 장애물은 같은 궤적을 돌 때마다 **같은** 편향을 만들고, 심하면 측정이 아예 막힙니다{{lit:util2022/nlos-bias-behaviour}}."
+                  en="Metal lets almost no radio through and reflects it instead (taken as a general property of radio waves). One study treated metal objects such as a fridge, a counter and a vending machine as severe-NLOS obstacles in its placement design{{lit:arxiv-2412-12427/nlos-treatment}}. A fixed obstacle produces the **same** bias every time the same trajectory is flown, and in severe cases the measurement is blocked altogether{{lit:util2022/nlos-bias-behaviour}}." /></td>
                 <td><T ko="앵커를 달기 전에 강당을 둘러보고, 금속 선반·기둥·트러스 뒤로 가는 경로가 생기지 않게 배치합니다." en="Walk the hall before mounting anchors and place them so that no path runs behind metal shelves, pillars or trusses." /></td>
               </tr>
             </tbody>
@@ -679,8 +720,8 @@ function Body() {
         <P ko="공개 데이터셋 UTIL 은 Crazyflie 와 같은 계열의 UWB 하드웨어(DWM1000 기반 Bitcraze LPS){{lit:util2022/hardware}}로 골판지, 금속, 목재, 플라스틱, 폼 장애물{{lit:util2022/nlos-obstacles}} 뒤에서 TDoA 를 측정했습니다. 장애물이 없는 배치에서는 IMU 와 융합한 위치 오차가 약 10 cm{{lit:util2022/benchmark-accuracy}} 였지만, 장애물을 놓은 배치에서는 크게 나빠졌습니다{{lit:util2022/benchmark-accuracy}}."
           en="The public UTIL dataset measured TDoA behind cardboard, metal, wood, plastic and foam obstacles{{lit:util2022/nlos-obstacles}} with UWB hardware of the same family as the Crazyflie's (the DWM1000-based Bitcraze LPS){{lit:util2022/hardware}}. In obstacle-free layouts the IMU-fused position error was about 10 cm{{lit:util2022/benchmark-accuracy}}; in the cluttered layout it degraded greatly{{lit:util2022/benchmark-accuracy}}." />
         <Note>
-          <P ko="**이 장의 데이터는 합성입니다.** 이 장의 히스토그램과 궤적은 모두 위 모델로 엔진이 만든 값이고, 편향 크기 $\bar b$ 는 문헌값이 아닌 예시값입니다. UTIL 데이터셋은 재배포를 허용하는 라이선스가 명시되어 있지 않아 교재에 넣지 않았습니다. 실제 NLOS 측정(LOS/NLOS 식별 데이터와 약 150분{{lit:util2022/contents}}의 비행 데이터)을 보고 싶으면 [UTIL 데이터셋 페이지](https://utiasdsl.github.io/util-uwb-dataset/){{lit:util2022/dataset-url}} 에서 직접 받을 수 있습니다."
-            en="**The data in this chapter is synthetic.** Every histogram and trajectory here is generated by the engine from the model above, and the bias size $\bar b$ is an example value, not a literature value. The UTIL dataset states no licence that allows redistribution, so it is not bundled. For real NLOS measurements (LOS/NLOS identification data and about 150 minutes{{lit:util2022/contents}} of flight data), download it yourself from the [UTIL dataset page](https://utiasdsl.github.io/util-uwb-dataset/){{lit:util2022/dataset-url}}." />
+          <P ko="**이 장의 데이터는 합성입니다.** 이 장의 히스토그램과 궤적은 모두 위 모델로 엔진이 만든 값이고, 편향 크기 $\bar b$ 는 문헌값이 아닌 예시값입니다. UTIL 데이터셋은 우리가 확인한 범위(저장소, 프로젝트 페이지, 논문)에서 재배포를 허용하는 라이선스 표기를 찾지 못해 교재에 넣지 않았습니다. 실제 NLOS 측정(LOS/NLOS 식별 데이터와 약 150분{{lit:util2022/contents}}의 비행 데이터)을 보고 싶으면 [UTIL 데이터셋 페이지](https://utiasdsl.github.io/util-uwb-dataset/){{lit:util2022/dataset-url}} 에서 직접 받을 수 있습니다."
+            en="**The data in this chapter is synthetic.** Every histogram and trajectory here is generated by the engine from the model above, and the bias size $\bar b$ is an example value, not a literature value. Within what we checked (repository, project page, paper) we found no licence statement allowing redistribution of the UTIL dataset, so it is not bundled. For real NLOS measurements (LOS/NLOS identification data and about 150 minutes{{lit:util2022/contents}} of flight data), download it yourself from the [UTIL dataset page](https://utiasdsl.github.io/util-uwb-dataset/){{lit:util2022/dataset-url}}." />
         </Note>
       </Section>
 
@@ -693,19 +734,19 @@ function Body() {
         <P ko="NLOS 측정을 걸러 내는 가장 단순한 생각은 **'예상과 너무 다른 측정은 의심한다'** 입니다. 예상이 있으려면 예측이 있어야 합니다. 필터는 직전 추정값과 운동 모델로 지금의 상태를 예측해 두고 있습니다(어떻게 예측하는지는 5장에서 다룹니다). 지금은 필터가 상태의 예측값 $\hat x$ 와 그 불확실성을 나타내는 공분산 $P$ 를 갖고 있다는 것만 받아들이면 됩니다."
           en="The simplest idea for filtering out NLOS measurements is **'be suspicious of a measurement that is too far from what you expected'**. Expecting requires predicting. A filter always holds a prediction of the current state, made from the previous estimate and a motion model (chapter 5 explains how). For now, just accept that the filter has a predicted state $\hat x$ and a covariance $P$ that describes its uncertainty." />
         <Derivation id="gate" title={{ ko: '혁신, 혁신 분산, 그리고 문턱 k', en: 'Innovation, innovation variance and the threshold k' }}>
-          <P ko="스칼라 측정 하나를 생각합니다. 참 상태가 $x$ 일 때 측정은 $z = h(x) + v$ 입니다. $h$ 는 측정 모델(거리면 $h(x) = \lVert p - a\rVert$)이고, $v$ 는 분산이 $R$ 인 측정 잡음입니다(단위 m²). 측정과 예측한 측정의 차를 **혁신**(innovation)이라고 합니다."
-            en="Take one scalar measurement. With true state $x$ the measurement is $z = h(x) + v$, where $h$ is the measurement model (for a range, $h(x) = \lVert p - a\rVert$) and $v$ is measurement noise of variance $R$ (unit m²). The difference between the measurement and the predicted measurement is the **innovation**." />
+          <P ko="스칼라 측정 하나를 생각합니다. **상태** $x$ 는 필터가 추정하는 값들을 쌓은 벡터로, 드론의 위치 $p$ 와 속도 등이 들어 있습니다. 참 상태가 $x$ 일 때 측정은 $z = h(x) + v$ 입니다. $h$ 는 측정 모델(거리면 앵커 $a$ 까지의 거리 $h(x) = \lVert p - a\rVert$)이고, $v$ 는 분산이 $R$ 인 측정 잡음입니다(단위 m²). 측정과 예측한 측정의 차를 **혁신**(innovation)이라고 합니다."
+            en="Take one scalar measurement. The **state** $x$ is the vector of quantities the filter estimates; it contains the drone position $p$, the velocity and so on. With true state $x$ the measurement is $z = h(x) + v$, where $h$ is the measurement model (for a range, the distance to anchor $a$, $h(x) = \lVert p - a\rVert$) and $v$ is measurement noise of variance $R$ (unit m²). The difference between the measurement and the predicted measurement is the **innovation**." />
           <M block tex={String.raw`\nu \;=\; z - h(\hat x)`} />
-          <P ko="예측 오차 $\tilde x = x - \hat x$ 가 작다고 보고 $h$ 를 $\hat x$ 주변에서 1차까지 전개합니다. $H = \partial h/\partial x$ 는 야코비안(행벡터)입니다."
-            en="Assume the prediction error $\tilde x = x - \hat x$ is small and expand $h$ to first order around $\hat x$. $H = \partial h/\partial x$ is the Jacobian (a row vector)." />
+          <P ko="예측 오차 $\tilde x = x - \hat x$ 가 작다고 보고 $h$ 를 $\hat x$ 주변에서 1차까지 전개합니다. $H = \partial h/\partial x$ 는 야코비안(행벡터)입니다. 거리 측정이면 $H$ 의 위치 자리에는 2장에서 본 '앵커에서 태그를 향하는 단위벡터'의 성분이, 속도 등 나머지 자리에는 0 이 들어갑니다."
+            en="Assume the prediction error $\tilde x = x - \hat x$ is small and expand $h$ to first order around $\hat x$. $H = \partial h/\partial x$ is the Jacobian (a row vector). For a range, the position entries of $H$ hold the components of the unit vector from the anchor towards the tag seen in chapter 2, and the other entries (velocity etc.) are 0." />
           <M block tex={String.raw`h(x) \approx h(\hat x) + H\tilde x \quad\Longrightarrow\quad \nu \approx H\tilde x + v`} />
           <P ko="예측 오차와 측정 잡음은 서로 독립이고 평균이 0 이므로, 혁신의 분산은 두 분산의 합입니다. $\mathbb E[\tilde x\tilde x^{\mathsf T}] = P$ 를 쓰면"
             en="The prediction error and the measurement noise are independent with zero mean, so the variance of the innovation is the sum of the two variances. Using $\mathbb E[\tilde x\tilde x^{\mathsf T}] = P$," />
           <M block tex={String.raw`S \;=\; \mathbb E[\nu^{2}] \;=\; H\,\mathbb E[\tilde x\tilde x^{\mathsf T}]\,H^{\mathsf T} + \mathbb E[v^{2}] \;=\; H P H^{\mathsf T} + R`} />
           <P ko="$S$ 는 '모델이 맞다면 혁신이 이 정도로 흩어져야 한다'는 값입니다. 예측이 불확실하면($P$ 가 크면) $S$ 가 커지므로 큰 혁신도 이상하지 않습니다. 혁신을 그 표준편차로 나눈 $|\nu|/\sqrt S$ 가 '혁신이 몇 $\sigma$ 떨어져 있나'이고, 이것이 스칼라 측정의 **마할라노비스 거리**(Mahalanobis distance)입니다. 측정이 여러 성분인 벡터라면 $d^2 = \nu^{\mathsf T} S^{-1}\nu$ 로 씁니다."
             en="$S$ says how widely the innovation should scatter if the model is right. When the prediction is uncertain (large $P$), $S$ is large and a large innovation is not strange. The innovation divided by its standard deviation, $|\nu|/\sqrt S$, is 'how many $\sigma$ away the innovation is': the **Mahalanobis distance** of a scalar measurement. For a vector measurement it is $d^2 = \nu^{\mathsf T} S^{-1}\nu$." />
-          <P ko="예측 오차와 잡음이 가우스이면 $\nu \sim \mathcal N(0, S)$ 이므로 $\nu/\sqrt S$ 는 표준정규분포를 따르고, 그 제곱 $\nu^2/S$ 는 자유도 1 인 카이제곱 분포 $\chi^2(1)$ 을 따릅니다. **게이트**(gate)는 이 값에 문턱을 두는 것입니다."
-            en="If the prediction error and noise are Gaussian, $\nu \sim \mathcal N(0, S)$, so $\nu/\sqrt S$ is standard normal and its square $\nu^2/S$ follows the chi-squared distribution with one degree of freedom, $\chi^2(1)$. A **gate** puts a threshold on this value." />
+          <P ko="예측 오차와 잡음이 가우스이면 $\nu \sim \mathcal N(0, S)$ 이므로 $\nu/\sqrt S$ 는 표준정규분포를 따르고, 그 제곱 $\nu^2/S$ 가 따르는 분포를 '자유도 1 인 카이제곱 분포' $\chi^2(1)$ 이라고 부릅니다(아래 논문의 '카이제곱 기각'이 이 값에 문턱을 두는 것입니다). **게이트**(gate)는 이 값에 문턱을 두는 것입니다. 이 장에서 $k$ 는 언제나 **게이트 문턱**입니다(0장의 게인 $k$, 2장의 반복 번호 $k$ 와는 다른 기호입니다)."
+            en="If the prediction error and noise are Gaussian, $\nu \sim \mathcal N(0, S)$, so $\nu/\sqrt S$ is standard normal and the distribution of its square $\nu^2/S$ is called the chi-squared distribution with one degree of freedom, $\chi^2(1)$ (the 'chi-squared rejection' of the paper cited below thresholds this value). A **gate** puts a threshold on this value. In this chapter $k$ always means the **gate threshold** (not the gain $k$ of chapter 0 or the iteration index $k$ of chapter 2)." />
           <M block tex={String.raw`\frac{\nu^{2}}{S} \le k^{2}\ \Rightarrow\ \tx{받아들인다}{accept},\qquad \frac{\nu^{2}}{S} > k^{2}\ \Rightarrow\ \tx{버린다}{reject}`} />
           <P ko="문턱 $k$ 는 '멀쩡한 측정을 얼마나 자주 잘못 버릴 것인가'로 정합니다. 표준정규분포의 누적분포함수를 $\Phi$ 라 하면, 모델이 맞는데도 $|\nu|/\sqrt S > k$ 가 될 확률은 양쪽 꼬리를 합쳐"
             en="The threshold $k$ is chosen by how often you are willing to reject a good measurement by mistake. With $\Phi$ the cumulative distribution of the standard normal, the probability that $|\nu|/\sqrt S > k$ although the model is right is, adding both tails," />
@@ -722,8 +763,8 @@ function Body() {
           <P ko="측정을 받아들인 뒤의 갱신은 5장에서 유도합니다. 결과만 미리 쓰면 $K = PH^{\mathsf T}/S$, $\hat x^{+} = \hat x + K\nu$, $P^{+} = (I - KH)P$ 입니다. $K$ 는 혁신 중 얼마를 추정값에 반영할지 정하는 이득입니다. 버린 측정으로는 $\hat x$ 도 $P$ 도 바꾸지 않습니다."
             en="The update after accepting a measurement is derived in chapter 5. Stating the result in advance: $K = PH^{\mathsf T}/S$, $\hat x^{+} = \hat x + K\nu$, $P^{+} = (I - KH)P$. $K$ is the gain that decides how much of the innovation goes into the estimate. A rejected measurement changes neither $\hat x$ nor $P$." />
         </Derivation>
-        <P ko="실제 시스템도 같은 생각을 씁니다. Crazyflie 펌웨어의 TDoA 이상치 필터는 먼저 물리적으로 불가능한 값(두 앵커 사이의 거리보다 큰 거리차)을 버리고, 오차가 2.5·stdDev 안쪽인 표본만 통과시킵니다{{lit:cf-firmware-docs/tdoa-outlier-filter}}. 기본 stdDev 가 0.15 m{{lit:cf-firmware-docs/tdoa-noise-std}} 이므로 통과 한계는 0.375 m{{der:ch4#gate|2.5 × 0.15 m|2.5 × 0.15 m}} 입니다. TWR 쪽은 앵커별로 최근 32개 거리의 평균에서 4σ 이상 벗어난 측정을 버리고{{lit:cf-firmware-docs/twr-outlier-filter}}, 거리 측정의 표준편차로는 0.25 m{{lit:cf-firmware-docs/twr-noise-std}} 를 씁니다. 보행자용 UWB TDoA 시스템을 다룬 한 논문은 LOS 잡음을 표준편차 10 cm 인 가우스로 두고 마할라노비스 임계값 5 의 카이제곱 기각을 썼습니다{{lit:arxiv-2412-12427/noise-model}}."
-          en="Real systems use the same idea. The TDoA outlier filter in the Crazyflie firmware first drops physically impossible values (a range difference larger than the distance between the two anchors) and then passes only samples whose error is within 2.5·stdDev{{lit:cf-firmware-docs/tdoa-outlier-filter}}. With the default stdDev of 0.15 m{{lit:cf-firmware-docs/tdoa-noise-std}} the pass limit is 0.375 m{{der:ch4#gate|2.5 × 0.15 m|2.5 × 0.15 m}}. On the TWR side, a measurement that deviates by 4σ or more from the mean of the last 32 ranges of that anchor is dropped{{lit:cf-firmware-docs/twr-outlier-filter}}, and 0.25 m{{lit:cf-firmware-docs/twr-noise-std}} is used as the range standard deviation. A paper on a pedestrian UWB TDoA system assumed Gaussian LOS noise with a 10 cm standard deviation and chi-squared rejection with a Mahalanobis threshold of 5{{lit:arxiv-2412-12427/noise-model}}." />
+        <P ko="실제 시스템도 같은 생각을 씁니다. Crazyflie 펌웨어의 TDoA 이상치 필터는 먼저 물리적으로 불가능한 값(두 앵커 사이의 거리보다 큰 거리차)을 버리고, 필터가 닫혀 있는 동안에는 오차가 2.5·stdDev 안쪽인 표본만 통과시킵니다{{lit:cf-firmware-docs/tdoa-outlier-filter}}(열고 닫는 동작은 아래 함정 실험실에서). 기본 stdDev 가 0.15 m{{lit:cf-firmware-docs/tdoa-noise-std}} 이므로 통과 한계는 0.375 m{{der:ch4#gate|2.5 × 0.15 m|2.5 × 0.15 m}} 입니다. TWR 쪽은 앵커별로 최근 32개 거리의 평균에서 4σ 이상 벗어난 측정을 버리고{{lit:cf-firmware-docs/twr-outlier-filter}}, 거리 측정의 표준편차로는 0.25 m{{lit:cf-firmware-docs/twr-noise-std}} 를 씁니다. 보행자용 UWB TDoA 시스템을 다룬 한 논문은 LOS 잡음을 표준편차 10 cm 인 가우스로 두고 마할라노비스 임계값 5 의 카이제곱 기각을 썼습니다{{lit:arxiv-2412-12427/noise-model}}."
+          en="Real systems use the same idea. The TDoA outlier filter in the Crazyflie firmware first drops physically impossible values (a range difference larger than the distance between the two anchors) and then, while the filter is closed, passes only samples whose error is within 2.5·stdDev{{lit:cf-firmware-docs/tdoa-outlier-filter}} (the opening and closing are described in the pitfall lab below). With the default stdDev of 0.15 m{{lit:cf-firmware-docs/tdoa-noise-std}} the pass limit is 0.375 m{{der:ch4#gate|2.5 × 0.15 m|2.5 × 0.15 m}}. On the TWR side, a measurement that deviates by 4σ or more from the mean of the last 32 ranges of that anchor is dropped{{lit:cf-firmware-docs/twr-outlier-filter}}, and 0.25 m{{lit:cf-firmware-docs/twr-noise-std}} is used as the range standard deviation. A paper on a pedestrian UWB TDoA system assumed Gaussian LOS noise with a 10 cm standard deviation and chi-squared rejection with a Mahalanobis threshold of 5{{lit:arxiv-2412-12427/noise-model}}." />
         <Note>
           <P ko="이 교재의 게이트는 위 필터들을 그대로 옮긴 것이 아닙니다. 같은 생각을 가장 단순한 꼴($\nu^2/S \le k^2$)로 쓴 개념 모델입니다. 펌웨어의 실제 동작은 6장과 펌웨어 문서를 보세요."
             en="The gate in this textbook does not reproduce those filters. It is a concept model that writes the same idea in its simplest form ($\nu^2/S \le k^2$). For what the firmware really does, see chapter 6 and the firmware documentation." />
@@ -741,43 +782,58 @@ function Body() {
           }} />
         <GateDemo />
         <Derivation id="sigma-eff" title={{ ko: '게이트를 지난 뒤의 유효 오차 σ_eff', en: 'The effective error σ_eff after the gate' }}>
-          <P ko="오차 예산에는 '게이트를 지나 필터에 실제로 들어가는 측정'의 오차 크기가 필요합니다. 측정 하나가 NLOS 일 확률을 $p$ 라 하면 오차 $e$ 의 확률밀도는 두 분포를 섞은 것입니다."
-            en="The error budget needs the size of the error of the measurements that actually enter the filter after the gate. If a measurement is NLOS with probability $p$, the density of the error $e$ is a mixture of two distributions." />
-          <M block tex={String.raw`f(e) \;=\; (1-p)\,\underbrace{\mathcal N(e;\,0,\sigma^{2})}_{\tx{LOS}{LOS}} \;+\; p\,\underbrace{f_{\mathrm{EMG}}(e;\,\sigma,\bar b)}_{\tx{NLOS}{NLOS}}`} />
+          <P ko="오차 예산에는 '게이트를 지나 필터에 실제로 들어가는 측정'의 오차 크기가 필요합니다. 측정 하나가 NLOS 일 확률을 $p_{\text{NLOS}}$ 라 하면, 오차 $e$ 의 **확률밀도**(그 값 근처가 나올 확률을 폭으로 나눈 것) $f(e)$ 는 두 분포를 섞은 것입니다."
+            en="The error budget needs the size of the error of the measurements that actually enter the filter after the gate. If a measurement is NLOS with probability $p_{\text{NLOS}}$, the **probability density** (the probability of a value near $e$ divided by the width) $f(e)$ of the error is a mixture of two distributions." />
+          <M block tex={String.raw`f(e) \;=\; (1-p_{\text{NLOS}})\,\underbrace{\mathcal N(e;\,0,\sigma^{2})}_{\tx{LOS}{LOS}} \;+\; p_{\text{NLOS}}\,\underbrace{f_{\mathrm{EMG}}(e;\,\sigma,\bar b)}_{\tx{NLOS}{NLOS}}`} />
           <P ko="예측이 충분히 정확해서 혁신이 곧 측정 오차라고 가정하면($HPH^{\mathsf T} \ll R$, 즉 $S \approx \sigma^2$), 게이트는 $|e| \le k\sigma$ 인 측정만 통과시킵니다. 통과하는 비율 $A$, 통과한 오차의 평균 $\mu$(남은 편향), 그리고 통과한 오차의 RMS 인 **유효 오차** $\sigma_{\text{eff}}$ 는"
             en="Assume the prediction is accurate enough that the innovation equals the measurement error ($HPH^{\mathsf T} \ll R$, i.e. $S \approx \sigma^2$). The gate then passes only measurements with $|e| \le k\sigma$. The accepted fraction $A$, the mean $\mu$ of the accepted errors (residual bias) and their RMS, the **effective error** $\sigma_{\text{eff}}$, are" />
           <M block tex={String.raw`A(k) = \int_{-k\sigma}^{k\sigma} f(e)\,de,\qquad \mu = \frac{1}{A}\int_{-k\sigma}^{k\sigma} e\,f(e)\,de,\qquad \sigma_{\text{eff}}^{2} = \frac{1}{A}\int_{-k\sigma}^{k\sigma} e^{2} f(e)\,de`} />
           <P ko="$\sigma_{\text{eff}}$ 는 평균이 아니라 0 을 기준으로 잰 RMS 이므로 남은 편향 $\mu$ 의 몫까지 포함합니다. 적분은 닫힌 식이 없어 수치로 계산합니다(위 데모의 선). 게이트를 끄면($k \to \infty$) 앞 유도의 결과에서 바로"
             en="$\sigma_{\text{eff}}$ is an RMS about zero, not about the mean, so it includes the contribution of the residual bias $\mu$. The integrals have no closed form and are evaluated numerically (the lines in the demo above). With the gate off ($k \to \infty$), the earlier derivation gives directly" />
-          <M block tex={String.raw`\sigma_{\text{eff}}^{2}\Big|_{\tx{게이트 끔}{gate off}} = (1-p)\,\sigma^{2} + p\,(\sigma^{2} + 2\bar b^{2}) = \sigma^{2} + 2p\,\bar b^{2},\qquad \mu = p\,\bar b`} />
+          <M block tex={String.raw`\sigma_{\text{eff}}^{2}\Big|_{\tx{게이트 끔}{gate off}} = (1-p_{\text{NLOS}})\,\sigma^{2} + p_{\text{NLOS}}\,(\sigma^{2} + 2\bar b^{2}) = \sigma^{2} + 2p_{\text{NLOS}}\,\bar b^{2},\qquad \mu = p_{\text{NLOS}}\,\bar b`} />
           <P ko={`지금 설정으로는 게이트를 껐을 때 $\\sigma_{\\text{eff}}$ = ${fmt(off.rmsAccepted * 100, 3)} cm{{der:ch4#sigma-eff|√(σ² + 2p·b̄²)|√(σ² + 2p·b̄²)}}, 지금 문턱({{cfg:uwb.gateSigma}})에서는 ${fmt(b.sigmaEff * 100, 3)} cm{{der:ch4#sigma-eff}} 입니다. 2장의 식에서 $\\sigma_r$ 자리에 이 값을 넣어 UWB 만의 위치 오차를 $\\sigma_{\\text{pos}} = \\text{DOP}\\times\\sigma_{\\text{eff}}$ 로 계산합니다.`}
             en={`With the current settings $\\sigma_{\\text{eff}}$ = ${fmt(off.rmsAccepted * 100, 3)} cm{{der:ch4#sigma-eff|√(σ² + 2p·b̄²)|√(σ² + 2p·b̄²)}} with the gate off and ${fmt(b.sigmaEff * 100, 3)} cm{{der:ch4#sigma-eff}} at the current threshold ({{cfg:uwb.gateSigma}}). This value replaces $\\sigma_r$ in the formula of chapter 2, giving the UWB-only position error $\\sigma_{\\text{pos}} = \\text{DOP}\\times\\sigma_{\\text{eff}}$.`} />
-          <P ko="두 가지 단순화를 기억해 두세요. 첫째, 남은 편향을 무작위 오차처럼 RMS 에 넣었습니다. 실제로는 고정된 장애물이 만드는 편향은 평균되지 않습니다. 둘째, TDoA 에서도 같은 식을 씁니다. 한쪽 앵커만 가려지면 부호만 다를 뿐 RMS 는 같기 때문입니다. 다만 TDoA 측정 하나에는 경로가 둘 들어 있어, 측정이 오염될 확률은 경로 하나의 확률보다 큽니다. 9장에서 여러분의 로그로 $p$ 와 $\bar b$ 를 직접 맞춥니다."
-            en="Keep two simplifications in mind. First, the residual bias is folded into the RMS as if it were random; in reality the bias from a fixed obstacle does not average out. Second, the same formula is used for TDoA, because with one blocked anchor only the sign differs and the RMS is the same. But one TDoA measurement involves two paths, so the chance that it is contaminated is larger than the per-path probability. Chapter 9 fits $p$ and $\bar b$ to your own logs." />
+          <P ko="두 가지 단순화를 기억해 두세요. 첫째, 남은 편향을 무작위 오차처럼 RMS 에 넣었습니다. 실제로는 고정된 장애물이 만드는 편향은 평균되지 않습니다. 둘째, TDoA 에서도 같은 식을 씁니다. 한쪽 앵커만 가려지면 부호만 다를 뿐 RMS 는 같기 때문입니다. 다만 TDoA 측정 하나에는 경로가 둘 들어 있어, 측정이 오염될 확률은 경로 하나의 확률보다 큽니다. 9장에서 여러분의 로그로 $p_{\text{NLOS}}$ 와 $\bar b$ 를 직접 맞춥니다."
+            en="Keep two simplifications in mind. First, the residual bias is folded into the RMS as if it were random; in reality the bias from a fixed obstacle does not average out. Second, the same formula is used for TDoA, because with one blocked anchor only the sign differs and the RMS is the same. But one TDoA measurement involves two paths, so the chance that it is contaminated is larger than the per-path probability. Chapter 9 fits $p_{\text{NLOS}}$ and $\bar b$ to your own logs." />
+          <P ko={`그 차이가 얼마인지 수치로 봅니다. 이 장의 강건 추정 데모와 함정 실험실이 빌려 쓰는 5장 필터 엔진은 TDoA 측정을 '두 경로가 각각 확률 $p_{\\text{NLOS}}$ 로 가려진다'고 만듭니다. 그 모델(섞임 비율: 둘 다 LOS $(1-p_{\\text{NLOS}})^2$, 한쪽만 $2p_{\\text{NLOS}}(1-p_{\\text{NLOS}})$, 둘 다 $p_{\\text{NLOS}}^2$)로 같은 적분을 하면, 지금 설정(σ = {{cfg:uwb.sigmaTdoa}})에서 측정이 오염될 확률은 ${fmt(two.contaminated * 100, 3)}%${TWO}, 게이트를 끈 $\\sigma_{\\text{eff}}$ 는 ${fmt(twoOff.rmsAccepted * 100, 3)} cm${TWO}, 지금 문턱에서는 ${fmt(two.rmsAccepted * 100, 3)} cm${TWO}, 게이트가 버리는 비율은 ${fmt(two.rejected * 100, 3)}%${TWO} 입니다. 오차 예산은 위의 한 경로 식을 쓰므로, 측위 모드가 TDoA 일 때는 예산의 $\\sigma_{\\text{eff}}$ 가 조금 낙관적입니다.`}
+            en={`Here is the size of that difference. The chapter 5 filter engine borrowed by this chapter's robust-estimation demo and pitfall lab generates TDoA measurements with 'each of the two paths blocked with probability $p_{\\text{NLOS}}$'. Doing the same integrals with that model (mixture: both LOS $(1-p_{\\text{NLOS}})^2$, one side $2p_{\\text{NLOS}}(1-p_{\\text{NLOS}})$, both $p_{\\text{NLOS}}^2$) with the current settings (σ = {{cfg:uwb.sigmaTdoa}}): a measurement is contaminated with probability ${fmt(two.contaminated * 100, 3)}%${TWO}, $\\sigma_{\\text{eff}}$ is ${fmt(twoOff.rmsAccepted * 100, 3)} cm${TWO} with the gate off and ${fmt(two.rmsAccepted * 100, 3)} cm${TWO} at the current threshold, and the gate rejects ${fmt(two.rejected * 100, 3)}%${TWO}. The error budget uses the one-path formula above, so with TDoA as the mode the budget's $\\sigma_{\\text{eff}}$ is somewhat optimistic.`} />
         </Derivation>
       </Section>
 
       <Section id="robust" title={{ ko: '강건 추정: 버리지 말고 덜 믿기', en: 'Robust estimation: trust less instead of rejecting' }}>
         <P ko="게이트는 측정을 **믿는다 / 버린다** 둘로 나눕니다. 문턱 바로 안쪽의 NLOS 측정은 온전히 믿고, 바로 바깥쪽의 멀쩡한 측정은 완전히 버립니다. **강건 추정**(robust estimation)은 이 경계를 부드럽게 만듭니다. 혁신이 클수록 그 측정의 분산을 키워서(= 덜 믿어서) 반영합니다."
           en="A gate splits measurements into **trusted** and **rejected**. An NLOS measurement just inside the threshold is trusted fully; a good one just outside is discarded completely. **Robust estimation** softens this boundary: the larger the innovation, the more the variance of that measurement is inflated (the less it is trusted) before it is used." />
-        <P ko="가장 널리 쓰는 꼴이 **후버 가중**(Huber weight)입니다. 정규화 혁신 $r = |\nu|/\sqrt S$ 가 문턱 $c$ 이하이면 가중치 $w = 1$, 넘으면 $w = c/r$ 로 두고, 측정 분산을 $R/w$ 로 바꿔 갱신합니다. 혁신이 문턱의 두 배이면 분산을 두 배로 보는 셈입니다. 이렇게 '잔차의 제곱' 대신 덜 가파르게 자라는 비용을 쓰는 방법을 통틀어 **M-추정**(M-estimation)이라고 합니다."
-          en="The most common form is the **Huber weight**. If the normalised innovation $r = |\nu|/\sqrt S$ is at most the threshold $c$, the weight is $w = 1$; beyond it, $w = c/r$, and the update uses the measurement variance $R/w$. An innovation twice the threshold is treated as having twice the variance. Methods that replace the squared residual by a cost that grows less steeply are collectively called **M-estimation**." />
-        <M block tex={String.raw`w(r) = \begin{cases} 1 & r \le c\\[2pt] c/r & r > c \end{cases},\qquad r = \frac{|\nu|}{\sqrt S},\qquad R_{\text{eff}} = \frac{R}{w}`} />
+        <P ko="가장 단순한 꼴 가운데 하나가 **후버 가중**(Huber weight)입니다. 이렇게 '잔차의 제곱' 대신 덜 가파르게 자라는 비용을 쓰는 방법을 통틀어 **M-추정**(M-estimation)이라고 합니다."
+          en="One of the simplest forms is the **Huber weight**. Methods that replace the squared residual by a cost that grows less steeply are collectively called **M-estimation**." />
+        <Derivation id="huber" title={{ ko: '후버 비용에서 가중치 $w = c_H/u$ 까지', en: 'From the Huber cost to the weight $w = c_H/u$' }}>
+          <P ko="**정규화 혁신**을 $u = |\nu|/\sqrt S$ 라 씁니다('혁신이 몇 σ 떨어져 있나', 단위 없음). 최소제곱은 측정마다 비용 $\tfrac12 u^2$ 을 주고 그 합을 최소로 합니다. 혁신이 큰 측정 하나가 비용을 제곱으로 끌어올리므로 NLOS 하나에 끌려갑니다. **후버 비용** $\rho(u)$ 는 문턱 $c_H$ 안쪽에서는 최소제곱과 같고, 바깥에서는 직선으로만 자랍니다. 두 조각은 $u = c_H$ 에서 값과 기울기가 이어지도록 골랐습니다."
+            en="Write the **normalised innovation** as $u = |\nu|/\sqrt S$ ('how many σ away the innovation is', dimensionless). Least squares gives each measurement the cost $\tfrac12 u^2$ and minimises the sum, so one measurement with a large innovation raises the cost quadratically and drags the estimate. The **Huber cost** $\rho(u)$ equals least squares inside the threshold $c_H$ and grows only linearly outside; the two pieces are chosen so that value and slope match at $u = c_H$." />
+          <M block tex={String.raw`\rho(u) = \begin{cases} \tfrac12 u^{2} & u \le c_H\\[2pt] c_H\,u - \tfrac12 c_H^{2} & u > c_H \end{cases}`} />
+          <P ko="이런 비용을 최소로 하는 표준적인 방법은 **반복 재가중 최소제곱**(IRLS)입니다. 각 측정에 가중치 $w(u) = \rho'(u)/u$ 를 주고 보통의 (가중) 최소제곱을 풉니다. 가중 최소제곱에서 가중치 $w$ 를 준다는 것은 그 측정의 분산을 $R/w$ 로 본다는 것과 같습니다. $\rho'(u)$ 는 안쪽에서 $u$, 바깥에서 $c_H$ 이므로"
+            en="The standard way to minimise such a cost is **iteratively reweighted least squares** (IRLS): give each measurement the weight $w(u) = \rho'(u)/u$ and solve an ordinary (weighted) least-squares problem. Giving a measurement weight $w$ in weighted least squares is the same as treating its variance as $R/w$. Since $\rho'(u)$ is $u$ inside and $c_H$ outside," />
+          <M block tex={String.raw`w(u) = \frac{\rho'(u)}{u} = \begin{cases} 1 & u \le c_H\\[2pt] c_H/u & u > c_H \end{cases},\qquad u = \frac{|\nu|}{\sqrt S},\qquad R_{\text{eff}} = \frac{R}{w}`} />
+          <P ko="혁신이 문턱의 두 배이면 분산을 두 배로 보는 셈입니다. 필터 안에서의 순서는 이렇습니다. ① 원래의 $R$ 로 $\nu$, $S$ 를 계산해 $u$ 를 구합니다. ② $w(u)$ 를 구합니다. ③ $R_{\text{eff}} = R/w$ 로 $S$ 와 $K$ 를 **다시** 계산해 갱신합니다. 이 교재의 엔진은 이것을 한 번만 합니다(펌웨어는 아래처럼 최대 2회 반복)."
+            en="An innovation twice the threshold is treated as having twice the variance. The order inside the filter: ① compute $\nu$ and $S$ with the original $R$ and get $u$; ② compute $w(u)$; ③ recompute $S$ and $K$ with $R_{\text{eff}} = R/w$ and update. The engine of this textbook does this once (the firmware iterates up to twice, see below)." />
+          <P ko={`문턱 $c_H$ = ${HUBER_C}{{ex}} 는 이 교재 엔진에 고정된 예시값입니다. 혁신이 정규분포를 따르는 멀쩡한 측정이라면 ${fmt(huberKeep * 100, 3)}%{{der:ch4#huber|2Φ(c_H) − 1|2Φ(c_H) − 1}} 는 가중치 1 을 그대로 받습니다.`}
+            en={`The threshold $c_H$ = ${HUBER_C}{{ex}} is an example value fixed in this textbook's engine. For good measurements whose innovation is normally distributed, ${fmt(huberKeep * 100, 3)}%{{der:ch4#huber|2Φ(c_H) − 1|2Φ(c_H) − 1}} keep the full weight 1.`} />
+        </Derivation>
         <RobustDemo />
         <P ko="Crazyflie 펌웨어에도 같은 계열의 선택 기능이 있습니다. 다중경로와 NLOS 이상치의 영향을 줄이려고 G-M(Geman–McClure) 비용함수와 반복 재가중 최소제곱(IRLS, 최대 2회 반복)을 쓰는 M-추정 기반 강건 칼만 필터이며, 파라미터 `kalman.robustTwr`, `kalman.robustTdoa` 로 켭니다{{lit:cf-firmware-docs/robust-estimation}}. 근거 논문은 Zhao, Panerati, Schoellig (RA-L 2021) 입니다{{lit:cf-firmware-docs/robust-reference}}. 이 교재의 후버 가중은 같은 생각의 더 단순한 예이고, 펌웨어의 비용함수와는 다릅니다."
           en="The Crazyflie firmware has an optional feature of the same family: an M-estimation based robust Kalman filter that uses the G-M (Geman–McClure) cost and iteratively reweighted least squares (IRLS, at most two iterations) to reduce the effect of multipath and NLOS outliers, enabled with the parameters `kalman.robustTwr` and `kalman.robustTdoa`{{lit:cf-firmware-docs/robust-estimation}}. Its reference is Zhao, Panerati, Schoellig (RA-L 2021){{lit:cf-firmware-docs/robust-reference}}. The Huber weight in this textbook is a simpler example of the same idea and differs from the firmware's cost function." />
         <Note>
           <P ko="**개념만: IMM.** **상호작용 다중 모델**(interacting multiple model, IMM)은 '지금 LOS 인가 NLOS 인가'를 하나로 정하지 않고 두 가설을 **나란히** 돌립니다. (1) LOS 가설(편향 0, 분산 작음)과 NLOS 가설(편향 $\bar b$, 분산 큼)로 각각 갱신합니다. (2) 각 가설이 이번 혁신을 얼마나 잘 설명하는지, 즉 우도로 가설의 확률을 고칩니다. (3) 두 추정값을 그 확률로 섞어서 내보냅니다. (4) 다음 측정 전에 'LOS 였다가 NLOS 로 바뀔 확률' 같은 전이 확률로 두 가설을 조금 섞어 둡니다. 이 섞기가 이름의 '상호작용'입니다."
             en="**Concept only: IMM.** The **interacting multiple model** (IMM) estimator does not decide between 'LOS now' and 'NLOS now'; it runs both hypotheses **side by side**. (1) Update once under the LOS hypothesis (zero bias, small variance) and once under the NLOS hypothesis (bias $\bar b$, large variance). (2) Revise the probability of each hypothesis by how well it explains the current innovation, its likelihood. (3) Output the two estimates mixed with those probabilities. (4) Before the next measurement, mix the two hypotheses slightly using transition probabilities such as 'LOS turning into NLOS'. This mixing is the 'interacting' in the name." />
-          <M block tex={String.raw`\mu_{m} \;\propto\; \underbrace{\pi_{m}}_{\tx{직전 확률}{prior}} \times \underbrace{\mathcal N(\nu;\ b_{m},\ S_{m})}_{\tx{우도}{likelihood}},\qquad m \in \{\mathrm{LOS},\ \mathrm{NLOS}\}`} />
+          <M block tex={String.raw`\eta_{m} \;\propto\; \underbrace{\textstyle\sum_{i} \pi_{im}\,\eta_{i}^{\text{prev}}}_{\tx{전이 확률을 적용한 예측 확률}{predicted, after the transition}} \times \underbrace{\mathcal N(\nu;\ b_{m},\ S_{m})}_{\tx{우도}{likelihood}},\qquad m \in \{\mathrm{LOS},\ \mathrm{NLOS}\}`} />
+          <P ko="$\eta_m$ 은 가설 $m$ 의 확률, $\pi_{im}$ 은 가설 $i$ 에서 $m$ 으로 바뀔 전이 확률, $b_m$, $S_m$ 은 그 가설에서의 혁신의 평균과 분산입니다."
+            en="$\eta_m$ is the probability of hypothesis $m$, $\pi_{im}$ the transition probability from hypothesis $i$ to $m$, and $b_m$, $S_m$ the mean and variance of the innovation under that hypothesis." />
           <P ko="게이트가 '믿는다 / 버린다'를 고르는 방법이라면 IMM 은 '몇 % 믿는다'를 계속 추적하는 방법입니다. 가려짐이 한동안 이어지는 성질(한번 NLOS 면 다음 측정도 NLOS 일 가능성이 큼)을 전이 확률로 담을 수 있다는 것이 장점입니다. 이 교재에서는 구현하지 않습니다."
             en="Where a gate chooses between 'trust' and 'reject', an IMM keeps track of 'trust by so many per cent'. Its advantage is that the persistence of blocking (once NLOS, the next measurement is likely NLOS as well) can be expressed through the transition probabilities. This textbook does not implement it." />
         </Note>
       </Section>
 
       <Section id="task" title={{ ko: '손으로 짜 보기', en: 'Code it yourself' }}>
-        <P ko="위 유도의 세 줄($\nu$, $S$, 게이트 판정)과 갱신 식을 함수 하나로 옮깁니다. Crazyflie 의 온보드 필터처럼 측정을 **하나씩** 넣는 스칼라 갱신입니다."
-          en="Turn the three lines of the derivation ($\nu$, $S$, the gate test) and the update into one function. It is a scalar update that takes measurements **one at a time**, as the onboard Crazyflie filter does." />
+        <P ko="위 유도의 세 줄($\nu$, $S$, 게이트 판정)과 갱신 식을 함수 하나로 옮깁니다. 측정을 **하나씩** 넣는 스칼라 갱신입니다(5장의 필터도 이렇게 씁니다)."
+          en="Turn the three lines of the derivation ($\nu$, $S$, the gate test) and the update into one function. It is a scalar update that takes measurements **one at a time** (the filter of chapter 5 is used this way too)." />
         <CodeTask task={gatedUpdateTask} />
       </Section>
 
@@ -797,7 +853,7 @@ function Body() {
         <StatRow>
           <Stat label={{ ko: 'LOS 측정 노이즈 $\\sigma$', en: 'LOS measurement noise $\\sigma$' }} value={sigma * 100} unit="cm" src={ex(path)} />
           <Stat label={{ ko: '유효 오차 $\\sigma_{\\text{eff}}$', en: 'Effective error $\\sigma_{\\text{eff}}$' }} value={b.sigmaEff * 100} unit="cm" src={SEFF} status={b.sigmaEff > 1.25 * sigma ? 'warn' : 'good'} />
-          <Stat label={{ ko: 'HDOP / VDOP (강당 가운데)', en: 'HDOP / VDOP (hall centre)' }} value={`${fmt(b.dop.hdop, 3)} / ${fmt(b.dop.vdop, 3)}`} src={der('ch2', { ko: '2장의 DOP 를 강당 가운데, 비행 고도에서 계산한 값', en: 'The DOP of chapter 2 at the hall centre and flight height' })} />
+          <Stat label={{ ko: 'HDOP / VDOP (강당 가운데)', en: 'HDOP / VDOP (hall centre)' }} value={`${fmt(b.dop.hdop, 3)} / ${fmt(b.dop.vdop, 3)}`} src={der('ch2#gdop', { ko: '2장의 DOP 를 강당 가운데, 비행 고도에서 계산한 값', en: 'The DOP of chapter 2 at the hall centre and flight height' })} />
           <Stat label={{ ko: 'UWB 만의 위치 오차 수평 / 수직', en: 'UWB-only position error, horizontal / vertical' }} value={`${fmt(b.sigmaPosH * 100, 3)} / ${fmt(b.sigmaPosV * 100, 3)}`} unit="cm" src={der('ch4#sigma-eff', { ko: 'DOP × σ_eff', en: 'DOP × σ_eff' })} />
         </StatRow>
         <p>
@@ -815,9 +871,9 @@ function Body() {
 const def: ChapterDef = {
   id: 4,
   title: { ko: 'NLOS, 다중경로, 이상치', en: 'NLOS, multipath, outliers' },
-  lead: { ko: '앵커와 드론 사이가 가려지면 측정은 잡음이 커지는 것이 아니라 한쪽으로 치우칩니다. 그 치우친 측정을 어떻게 알아보고, 버리거나 덜 믿을지를 다룹니다.', en: 'When the path between an anchor and the drone is blocked, the measurement does not just get noisier; it becomes biased to one side. This chapter is about recognising such measurements and rejecting or down-weighting them.' },
+  lead: { ko: '앵커와 드론 사이가 가려지면 측정 오차의 모양이 달라집니다. 어떻게 달라지는지 보고, 그런 측정을 어떻게 알아보고 버리거나 덜 믿을지를 다룹니다.', en: 'When the path between an anchor and the drone is blocked, the shape of the measurement error changes. We see how, and then how to recognise such measurements and reject or down-weight them.' },
   objectives: [
-    { ko: '가려진 경로의 거리 오차가 왜 항상 +로 치우치고, TDoA 에서는 왜 ± 양쪽으로 나오는지 설명한다.', en: 'Explain why the range error on a blocked path is always biased to + and why in TDoA it can go either way.' },
+    { ko: '가려진 경로에서 거리와 거리차의 오차가 어느 쪽으로 치우치는지, 그 이유와 함께 설명한다.', en: 'Explain which way the range and range-difference errors are biased on a blocked path, and why.' },
     { ko: '혁신 $\\nu$ 와 혁신 분산 $S = HPH^{\\mathsf T} + R$ 로 마할라노비스 게이트를 만들고, 문턱 $k$ 를 오기각 확률 $2(1-\\Phi(k))$ 로 고른다.', en: 'Build a Mahalanobis gate from the innovation $\\nu$ and its variance $S = HPH^{\\mathsf T} + R$, and choose the threshold $k$ from the false-rejection probability $2(1-\\Phi(k))$.' },
     { ko: '게이트를 끄는 것과 너무 조이는 것이 각각 어떻게 실패하는지 재현하고, 강건 가중으로 완화한다.', en: 'Reproduce how switching the gate off and over-tightening it each fail, and mitigate with robust weighting.' },
   ],
@@ -835,8 +891,8 @@ const def: ChapterDef = {
     { ko: '게이트를 끄면 추정이 끌려가고, 너무 조이면 필터가 굶다가 잠긴다. 넉넉한 문턱, 버린 비율의 감시, 덜 믿는 강건 갱신으로 대비한다.', en: 'With the gate off the estimate is dragged; with the gate too tight the filter starves and locks out. Guard with a generous threshold, monitoring of the rejected fraction, and a robust update that trusts less.' },
   ],
   next: {
-    ko: '나쁜 측정을 걸러 냈어도 UWB 위치는 초당 수십 번만 나오고, 그 사이에는 아무 정보가 없으며, 나올 때마다 $\\sigma_{\\text{pos}}$ 만큼 흔들립니다. 게다가 이 장의 게이트는 "필터의 예측"이 이미 있다고 가정했습니다. 그 예측은 어디서 올까요? 1초에 수백 번 가속도를 재는 IMU 는 무엇을 더해 주고, 둘을 어떻게 합쳐야 할까요?',
-    en: 'Even with the bad measurements filtered out, a UWB position arrives only tens of times per second, with no information in between, and jitters by $\\sigma_{\\text{pos}}$ each time. Moreover, the gate of this chapter assumed that "the filter’s prediction" already exists. Where does that prediction come from? What does an IMU that measures acceleration hundreds of times per second add, and how should the two be combined?',
+    ko: '나쁜 측정을 걸러 냈어도 UWB 위치는 3장에서 구한 갱신율로만 나오고, 그 사이에는 아무 정보가 없으며, 나올 때마다 $\\sigma_{\\text{pos}}$ 만큼 흔들립니다. 게다가 이 장의 게이트는 "필터의 예측"이 이미 있다고 가정했습니다. 그 예측은 어디서 올까요? 그보다 훨씬 자주(펌웨어 소스 주석으로는 1000 Hz{{lit:cf-firmware-docs/kalman-predict-rate}}) 가속도를 재는 IMU 는 무엇을 더해 주고, 둘을 어떻게 합쳐야 할까요?',
+    en: 'Even with the bad measurements filtered out, a UWB position arrives only at the rate found in chapter 3, with no information in between, and jitters by $\\sigma_{\\text{pos}}$ each time. Moreover, the gate of this chapter assumed that "the filter’s prediction" already exists. Where does that prediction come from? What does an IMU that measures acceleration far more often (1000 Hz according to a firmware source comment{{lit:cf-firmware-docs/kalman-predict-rate}}) add, and how should the two be combined?',
   },
   tasks,
 };

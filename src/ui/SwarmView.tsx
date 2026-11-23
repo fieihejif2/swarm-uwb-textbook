@@ -65,7 +65,12 @@ export function SwarmView(p: SwarmViewProps) {
     if (!pos) return;
     const n = pos.length;
     const cx = pos.reduce((s, q) => s + q[0], 0) / n, cy = pos.reduce((s, q) => s + q[1], 0) / n;
-    const span = follow ? (p.span ?? 7) : p.hall.x * 1.06;
+    let span = follow ? (p.span ?? 7) : p.hall.x * 1.06;
+    if (follow) {
+      // 대형의 경계 상자(가로·세로) + 기체 지름의 두 배 여유가 화면에 모두 들어오도록
+      const ext = Math.max(...pos.map((q) => Math.abs(q[0] - cx)), ...pos.map((q) => Math.abs(q[1] - cy) * (width / H))) * 2;
+      span = Math.max(span, ext + 4 * p.bodySize);
+    }
     const k = width / span;
     const ox = follow ? cx : p.hall.x / 2, oy = follow ? cy : p.hall.y / 2;
     const sx = (x: number) => width / 2 + (x - ox) * k;

@@ -157,3 +157,37 @@ export function footprintSpan(a: Vec, p: Vec, box: Box): [number, number] | null
   }
   return [t0, t1];
 }
+
+/**
+ * 상보 오차함수 erfc(x) (Numerical Recipes 의 erfcc: 모든 x 에서 상대오차 1.2e-7 이하).
+ * 꼬리 확률이 1e-5 수준일 때도 유효숫자 여섯 자리가 맞는다(stats.ts 의 normCdf 는 절대오차 기준 근사라 꼬리에서 부정확).
+ */
+export function erfcPrecise(x: number): number {
+  const z = Math.abs(x), t = 1 / (1 + 0.5 * z);
+  const ans = t * Math.exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 + t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))));
+  return x >= 0 ? ans : 2 - ans;
+}
+/** 표준정규분포에서 |Z| > k 일 확률 2(1 − Φ(k)) (꼬리에서도 정밀) */
+export const twoSidedTail = (k: number): number => erfcPrecise(k / Math.SQRT2);
+
+/**
+ * TDoA 의 "두 경로" 모델로 본 게이트 통계. 거리차 하나에는 경로가 둘 들어 있고, 각 경로가 독립으로 확률 p 로 NLOS 다
+ * (엔진 sampleTdoaError 와 같은 모델). 섞임 비율: 둘 다 LOS (1−p)², 한쪽만 NLOS 2p(1−p), 둘 다 NLOS p².
+ * k ≤ 0 이면 게이트 끔. 반환: 오염 확률(경로 하나 이상 NLOS), 버리는 비율, 통과한 오차의 RMS(0 기준) [m].
+ */
+export function tdoaTwoPathGateStats(m: NlosModel, k: number): { contaminated: number; rejected: number; rmsAccepted: number } {
+  const p = m.pNlos, s = m.sigma, b = m.biasMean;
+  const pdf = (x: number) =>
+    (1 - p) * (1 - p) * tdoaErrorPdf(x, s, b, false, false)
+    + p * (1 - p) * (tdoaErrorPdf(x, s, b, true, false) + tdoaErrorPdf(x, s, b, false, true))
+    + p * p * tdoaErrorPdf(x, s, b, true, true);
+  const lim = k > 0 ? k * s : 8 * s + 30 * b;
+  const n = 4000, h = (2 * lim) / n;
+  let A = 0, E2 = 0;
+  for (let i = 0; i <= n; i++) {
+    const x = -lim + i * h, w = i === 0 || i === n ? 1 : i % 2 ? 4 : 2, f = pdf(x);
+    A += w * f; E2 += w * x * x * f;
+  }
+  A *= h / 3; E2 *= h / 3;
+  return { contaminated: 1 - (1 - p) * (1 - p), rejected: k > 0 ? Math.max(0, 1 - A) : 0, rmsAccepted: Math.sqrt(E2 / Math.max(A, 1e-12)) };
+}

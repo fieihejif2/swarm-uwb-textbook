@@ -31,7 +31,7 @@ export const FIELDS: FieldMeta[] = [
   F('uwb.pNlos', 'NLOS 발생 확률', 'NLOS probability', '%', 100, 0, 100, 1, 'uwb'),
   F('uwb.nlosBiasMean', 'NLOS 편향 평균', 'Mean NLOS bias', 'cm', 100, 0, 300, 1, 'uwb'),
   F('uwb.gateSigma', '게이트 문턱 (0 = 끔)', 'Gate threshold (0 = off)', 'σ', 1, 0, 10, 0.5, 'uwb'),
-  F('uwb.twrRangeTime', 'TWR 거리 1회 시간', 'Time per TWR range', 'ms', 1000, 0.5, 50, 0.5, 'uwb', { lit: { ref: () => lit('lps-docs', 'twr-ranging-rate'), value: 0.002 } }),
+  F('uwb.twrRangeTime', 'TWR 거리 1회 시간', 'Time per TWR range', 'ms', 1000, 0.5, 50, 0.5, 'uwb', { lit: { ref: () => der('ch3#rate', { ko: '문서의 거리 측정률 500 Hz 의 역수(1/500 Hz = 2 ms)', en: 'Inverse of the documented 500 Hz ranging rate (1/500 Hz = 2 ms)' }), value: 0.002 } }),
   F('uwb.tdoaSlotTime', 'TDoA 앵커 슬롯 길이', 'TDoA anchor slot length', 'ms', 1000, 0.5, 50, 0.5, 'uwb', { lit: { ref: () => lit('lps-docs', 'tdoa2-slot-timing'), value: 0.002 } }),
   F('uwb.anchorSurveyError', '앵커 좌표 측량 오차 (1σ)', 'Anchor survey error (1σ)', 'cm', 100, 0, 50, 0.5, 'uwb'),
   F('uwb.clockDriftPpm', '클럭 주파수 오차', 'Clock frequency error', 'ppm', 1, 0, 100, 1, 'uwb'),

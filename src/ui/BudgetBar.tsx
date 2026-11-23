@@ -1,3 +1,4 @@
+import { useEffect } from 'preact/hooks';
 /** 화면 하단에 항상 접혀 있는 오차 예산. 챕터를 지날 때마다 그 챕터의 항목이 채워진다. */
 import { BUDGET_LABELS, budgetSrc } from '../app/budgetLabels';
 import { fieldMeta } from '../app/fields';
@@ -12,7 +13,7 @@ const KIND: Record<BudgetItem['kind'], { ko: string; en: string }> = {
   bias: { ko: '편향 (그대로 합)', en: 'bias (added)' },
   deterministic: { ko: '확정 (그대로 합)', en: 'deterministic (added)' },
   geometry: { ko: '크기·여유', en: 'size / margin' },
-  info: { ko: '중간값', en: 'intermediate' },
+  info: { ko: '중간 계산값 (합계에 직접 더하지 않음)', en: 'intermediate (not added to the total directly)' },
 };
 const valueText = (it: BudgetItem): string => {
   const scale = it.unit === 'm' ? 100 : it.unit === 's' ? 1000 : 1;
@@ -67,6 +68,12 @@ export function BudgetTable({ all }: { all?: boolean }) {
 }
 
 export function BudgetBar() {
+  useEffect(() => {
+    if (!budgetOpen.value) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { budgetOpen.value = false; document.querySelector<HTMLElement>('[data-testid=budget-toggle]')?.focus(); } };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [budgetOpen.value]);
   const b = budget.value;
   const open = budgetOpen.value;
   const cfg = config.value;

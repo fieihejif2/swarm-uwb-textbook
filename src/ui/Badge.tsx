@@ -42,7 +42,7 @@ export function SrcBadge({ src }: { src: SrcRef }) {
   useEffect(() => () => clearTimeout(timer.current), []);
   return (
     <span
-      ref={ref} class={`badge ${src.kind}`} tabIndex={0} role="button" aria-label={`${tr(KIND_LABEL[src.kind])}: ${tr(KIND_TITLE[src.kind])}`}
+      ref={ref} class={`badge ${src.kind}`} tabIndex={-1} role="button" aria-label={`${tr(KIND_LABEL[src.kind])}: ${tr(KIND_TITLE[src.kind])}${src.kind === 'lit' ? ` — ${src.citation}, ${src.location}` : ''}`}
       data-src-kind={src.kind}
       data-src-ref={src.kind === 'lit' ? `${src.sourceId}/${src.key}` : src.kind === 'der' ? (src.chapter !== null ? `ch${src.chapter}${src.anchor ? `#${src.anchor}` : ''}` : '') : (src.field ?? '')}
       onMouseEnter={show} onMouseLeave={() => hide()} onFocus={show} onBlur={() => hide()}

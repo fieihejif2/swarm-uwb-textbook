@@ -53,10 +53,28 @@ export function SettingsPanel() {
   const [msg, setMsg] = useState<string | null>(null);
   const file = useRef<HTMLInputElement>(null);
   const close = () => { settingsOpen.value = false; };
+  const drawer = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    const opener = document.activeElement as HTMLElement | null;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    if (!focusField.value) drawer.current?.querySelector<HTMLElement>('[data-testid=settings-close]')?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { close(); return; }
+      if (e.key !== 'Tab' || !drawer.current) return;
+      const items = Array.from(drawer.current.querySelectorAll<HTMLElement>('button, input, select, summary, [href], [tabindex="0"]')).filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null);
+      if (!items.length) return;
+      const first = items[0], last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      else if (!drawer.current.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+      (opener && document.contains(opener) ? opener : document.querySelector<HTMLElement>('[data-testid=settings-open]'))?.focus();
+    };
   }, []);
   const target = focusField.value;
   const openGroup = target ? FIELDS.find((f) => f.path === target)?.group : undefined;
@@ -86,7 +104,7 @@ export function SettingsPanel() {
   return (
     <>
       <div class="scrim" onClick={close} />
-      <div class="drawer" role="dialog" aria-modal="true" aria-label={tr({ ko: '우리 시스템 설정', en: 'Our system settings' })} data-testid="settings-panel">
+      <div ref={drawer} class="drawer" role="dialog" aria-modal="true" aria-label={tr({ ko: '우리 시스템 설정', en: 'Our system settings' })} data-testid="settings-panel">
         <header>
           <strong>{tr({ ko: '우리 시스템 설정', en: 'Our system settings' })}</strong>
           <button type="button" class="btn icon ghost" onClick={close} aria-label={tr({ ko: '닫기', en: 'Close' })} data-testid="settings-close">✕</button>

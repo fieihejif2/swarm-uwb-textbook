@@ -1,18 +1,18 @@
 /** 3장의 데모와 함정 실험실. 계산은 모두 src/sim 의 엔진을 쓴다(개념 모델). */
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { fmt, tr } from '../../app/i18n';
-import { budget, config } from '../../app/store';
+import { budget, config, setPath } from '../../app/store';
 import { computeBudget } from '../../sim/budget';
-import { positionErrorMc, simulateRateError, simulateTdoaSchedule } from '../../sim/ch3_rate';
+import { positionErrorMc, simulateRateError, simulateTdoaSchedule, steadyStatePosSigmaFixedDisturbance } from '../../sim/ch3_rate';
 import { SystemConfig } from '../../sim/config';
 import { steadyStatePosSigma } from '../../sim/kf';
 import { Vec } from '../../sim/linalg';
 import { dopFor, insideAnchorBox } from '../../sim/positioning';
 import { swarmFromConfig } from '../../sim/scenario';
 import { simulateTwrSchedule, tdoaRate, twrRate } from '../../sim/updateRate';
-import { der, ex } from '../../sources';
+import { der, ex, lit } from '../../sources';
 import {
-  Button, Caption, CfgSlider, CodeView, Demo, LineChart, LinkGroup, M, P, Pitfall, PlanView, Segmented, Slider, SrcBadge, Stat, StatRow, Status,
+  Button, Caption, CodeView, Demo, LineChart, LinkGroup, M, P, Pitfall, PlanView, Segmented, Slider, SrcBadge, Stat, StatRow, Status,
   niceTicks, seriesColor, useDebounced, useWidth,
 } from '../../ui';
 import { updateRateTask } from './tasks';
@@ -58,9 +58,25 @@ export function outsideCount(samples: Vec[][], anchors: Vec[]): { out: number; t
 export const useCircuit = (cfg: SystemConfig): Vec[][] => useMemo(() => circuitSamples(cfg), [cfg]);
 
 /* ───────────────────────── 데모 1: 태그 수 → 드론당 갱신율 ───────────────────────── */
+/**
+ * 전역 설정 값 하나를 이 카드에서만 즉시 바꾸고, 끌기를 멈춘 뒤에(debounce) 전역에 반영한다.
+ * 전역 값을 바꾸면 장 전체의 데모가 다시 계산되므로 끄는 동안에는 이 카드만 따라오게 한다.
+ */
+function useLocalGlobal(path: 'uwb.twrRangeTime' | 'uwb.tdoaSlotTime', global: number): [number, (v: number) => void] {
+  const [v, setV] = useState(global);
+  useEffect(() => setV(global), [global]);
+  const settled = useDebounced(v, 250);
+  useEffect(() => {
+    const cur = path === 'uwb.twrRangeTime' ? config.value.uwb.twrRangeTime : config.value.uwb.tdoaSlotTime;
+    if (Math.abs(settled - cur) > 1e-12) setPath(path, settled);
+  }, [settled]);
+  return [v, setV];
+}
+
 export function RateDemo() {
   const cfg = config.value;
-  const Tr = cfg.uwb.twrRangeTime, Ts = cfg.uwb.tdoaSlotTime;
+  const [Tr, setTr] = useLocalGlobal('uwb.twrRangeTime', cfg.uwb.twrRangeTime);
+  const [Ts, setTs] = useLocalGlobal('uwb.tdoaSlotTime', cfg.uwb.tdoaSlotTime);
   const [nTags, setNTags] = useState(cfg.nDrones);
   const [nAnc, setNAnc] = useState(cfg.anchors.length);
   const data = useMemo(() => {
@@ -84,20 +100,26 @@ export function RateDemo() {
 \text{TWR:}\quad & f_{\text{meas}} = \lk{share}{\frac{1}{N_{\text{tag}}\,T_{\text{range}}}} &\quad f_{\text{pos}} &= \lk{twr}{\frac{1}{N_{\text{tag}}\,N_{\text{anc}}\,T_{\text{range}}}} \\[6pt]
 \text{TDoA:}\quad & f_{\text{meas}} = \lk{listen}{\frac{1}{T_{\text{slot}}}} &\quad f_{\text{pos}} &= \lk{tdoa}{\frac{1}{N_{\text{anc}}\,T_{\text{slot}}}}
 \end{aligned}`} />
-        <p class="link-hint">{tr({ ko: '↑ 수식의 항을 가리키면(또는 Tab 으로 고르면) 코드 줄과 그래프의 선이 함께 강조됩니다.', en: '↑ Point at a term (or reach it with Tab) to highlight the matching code line and chart line.' })}</p>
+        <p class="link-hint">{tr({ ko: '↑ 수식의 항을 가리키면(또는 Tab 으로 고르면) 코드 줄(맨 아래에 접혀 있음)과 그래프의 선이 함께 강조됩니다.', en: '↑ Point at a term (or reach it with Tab) to highlight the matching code line (folded at the bottom) and chart line.' })}</p>
         <div class="controls">
           <Slider label={{ ko: '태그(드론) 수 $N_{\\text{tag}}$', en: 'Number of tags (drones) $N_{\\text{tag}}$' }} value={nTags} min={1} max={20} step={1} unit={tr({ ko: '대', en: '' })} onChange={setNTags} testId="ch3-ntags"
             src={ex(undefined, { ko: '이 데모에서만 바꾸는 값. 우리 프로젝트는 5대입니다.', en: 'Local to this demo. Our project flies five.' })} />
           <Slider label={{ ko: '앵커 수 $N_{\\text{anc}}$', en: 'Number of anchors $N_{\\text{anc}}$' }} value={nAnc} min={4} max={Math.max(8, cfg.anchors.length)} step={1} unit={tr({ ko: '개', en: '' })} onChange={setNAnc} testId="ch3-nanc"
             src={ex(undefined, { ko: '이 데모에서만 바꾸는 값. 처음 값은 전역 설정의 앵커 수입니다.', en: 'Local to this demo; starts from the number of anchors in the global settings.' })} />
-          <CfgSlider path="uwb.twrRangeTime" max={10} />
-          <CfgSlider path="uwb.tdoaSlotTime" max={10} />
+          <Slider label={{ ko: 'TWR 거리 1회 시간 $T_{\\text{range}}$ (전역 설정)', en: 'Time per TWR range $T_{\\text{range}}$ (global setting)' }} value={Tr * 1000} min={0.5} max={10} step={0.5} unit="ms" onChange={(v) => setTr(v / 1000)} testId="cfg-uwb.twrRangeTime"
+            src={Math.abs(Tr - 0.002) < 1e-12
+              ? der('ch3#rate', { ko: '전역 설정. 기본값 2 ms 는 문서의 거리 측정률 500 Hz 를 가정 (가)(채널을 빈틈없이 씀)로 뒤집은 유도값 1/500 Hz 입니다.', en: 'Global setting. The default 2 ms is derived: the documented 500 Hz ranging rate inverted under assumption (a) (channel used back to back), 1/500 Hz.' })
+              : ex('uwb.twrRangeTime', { ko: '전역 설정을 기본값(문서의 500 Hz 에서 유도한 2 ms)에서 바꾼 값입니다.', en: 'Global setting changed from its default (2 ms, derived from the documented 500 Hz).' })} />
+          <Slider label={{ ko: 'TDoA 앵커 슬롯 길이 $T_{\\text{slot}}$ (전역 설정)', en: 'TDoA anchor slot length $T_{\\text{slot}}$ (global setting)' }} value={Ts * 1000} min={0.5} max={10} step={0.5} unit="ms" onChange={(v) => setTs(v / 1000)} testId="cfg-uwb.tdoaSlotTime"
+            src={Math.abs(Ts - 0.002) < 1e-12 ? lit('lps-docs', 'tdoa2-slot-timing') : ex('uwb.tdoaSlotTime', { ko: '전역 설정을 문서의 값(2 ms)에서 바꾼 값입니다.', en: 'Global setting changed from the documented value (2 ms).' })} />
         </div>
+        <p class="small muted" style={{ marginTop: '-4px' }}>{tr({ ko: '두 칸 길이 슬라이더는 전역 설정입니다. 끄는 동안에는 이 카드만 바로 바뀌고, 손을 뗀 뒤에 오차 예산과 다른 데모에 반영됩니다.', en: 'The two cell-length sliders are global settings. While dragging only this card updates; the error budget and other demos follow once you let go.' })}</p>
         <StatRow>
           <Stat label={{ ko: 'TWR · 드론당 거리 측정', en: 'TWR · ranges per drone' }} value={tw.rangesPerSecPerTag} unit={tr({ ko: '회/s', en: '/s' })} src={RATE} />
           <Stat label={{ ko: 'TWR · 드론당 위치 갱신율', en: 'TWR · position rate per drone' }} value={tw.positionRate} unit="Hz" src={RATE} status={tw.positionRate < td.positionRate / 2 ? 'warn' : undefined} />
           <Stat label={{ ko: 'TWR · 위치 갱신 주기', en: 'TWR · position update period' }} value={1000 / tw.positionRate} unit="ms" src={RATE} />
         </StatRow>
+        <p class="small muted">{tr({ ko: '기호의 뜻: △ TWR 의 드론당 갱신율이 TDoA 의 절반보다 낮음.', en: 'Symbol: △ the per-drone TWR rate is below half the TDoA rate.' })}</p>
         <StatRow>
           <Stat label={{ ko: 'TDoA · 드론당 듣는 패킷', en: 'TDoA · packets heard per drone' }} value={td.tdoaPerSecPerTag} unit={tr({ ko: '개/s', en: '/s' })} src={RATE} />
           <Stat label={{ ko: 'TDoA · 드론당 위치 갱신율', en: 'TDoA · position rate per drone' }} value={td.positionRate} unit="Hz" src={RATE} />
@@ -121,8 +143,10 @@ export function RateDemo() {
           ko: 'TWR 선은 태그 수에 반비례해 떨어지고 TDoA 선은 수평입니다. 점은 정해진 시간 동안 "끝까지 돈 바퀴"만 정수로 세기 때문에 선보다 아주 조금 아래에 놓이기도 합니다.',
           en: 'The TWR line falls in inverse proportion to the number of tags; the TDoA line is flat. Points count only completed rounds (integers) in a fixed time, so they may sit slightly below the line.',
         })}</Caption>
-        <CodeView code={updateRateTask.solution} links={updateRateTask.links} />
-        <Caption>{tr({ ko: '이 코드는 아래 손코딩 과제의 기준 구현입니다. 먼저 직접 풀어 보고 싶다면 과제부터 하세요.', en: 'This is the reference solution of the coding task below. If you would rather solve it first, do the task before reading it.' })}</Caption>
+        <details style={{ marginTop: '8px' }} data-testid="ch3-rate-code">
+          <summary style={{ cursor: 'pointer', fontWeight: 650 }}>{tr({ ko: '수식과 연결된 코드 보기 (아래 손코딩 과제의 기준 구현입니다 — 먼저 풀어 보려면 열지 마세요)', en: 'Show the code linked to the formula (the reference solution of the coding task below — keep it closed if you want to try first)' })}</summary>
+          <CodeView code={updateRateTask.solution} links={updateRateTask.links} />
+        </details>
       </Demo>
     </LinkGroup>
   );
@@ -162,7 +186,7 @@ export function TimelineDemo() {
   }, [playing, tEnd]);
 
   // 그림의 치수
-  const W = Math.max(width, 280), gl = 60, gr = 8, iw = W - gl - gr;
+  const W = Math.max(width, 280), gl = 60, gr = 18, iw = W - gl - gr;
   let win = (iw / 15) * Math.min(Tr, Ts); // 가장 짧은 칸이 15px 쯤 되도록
   if (win > tEnd) win = tEnd;
   const pps = iw / win;
@@ -293,7 +317,9 @@ export function ErrorDemo() {
   const fD = tdoaRate({ nAnchors: nA, slotTime: cfg.uwb.tdoaSlotTime }).positionRate;
   const [sig, setSig] = useState(() => Math.min(0.4, Math.max(0.02, Math.round(b.sigmaPosH * 200) / 200)));
   const [sa, setSa] = useState(() => Math.min(5, Math.max(0.2, cfg.estimation.accelNoise)));
-  const prm = useDebounced({ sig, sa }, 160);
+  // 객체를 그대로 디바운스하면 렌더마다 새 객체가 되어 끝없이 다시 계산된다 → 문자열 키로
+  const prmKey = useDebounced(JSON.stringify({ sig, sa }), 160);
+  const prm = useMemo(() => JSON.parse(prmKey) as { sig: number; sa: number }, [prmKey]);
   const fMax = Math.max(100, Math.ceil((Math.max(fT, fD) * 1.2) / 10) * 10);
   const curve = useMemo(() => {
     const x: number[] = [], y: number[] = [];
@@ -305,7 +331,8 @@ export function ErrorDemo() {
     return { x, y: x.map((f, i) => simulateRateError(prm.sig, f, prm.sa, 600, 11 + i) * 100) };
   }, [prm, fMax, fT, fD]);
   const eT = steadyStatePosSigma(sig, fT, sa), eD = steadyStatePosSigma(sig, fD, sa);
-  const SRC = der('ch3#rate-to-error', {
+  const fixedRatio = steadyStatePosSigmaFixedDisturbance(sig, fT, sa, fD) / steadyStatePosSigmaFixedDisturbance(sig, fD, sa, fD);
+  const SRC = der('ch5#steady-state', {
     ko: '선: 1축 등속 모델 칼만 필터의 정상상태 오차(엔진 steadyStatePosSigma, 5장에서 유도). 점: 같은 모델로 600초 동안 실제로 필터를 돌려 잰 오차의 RMS.',
     en: 'Line: steady-state error of a Kalman filter on a one-axis constant-velocity model (engine steadyStatePosSigma, derived in chapter 5). Points: RMS error measured by actually running the filter on the same model for 600 s.',
   });
@@ -324,6 +351,8 @@ export function ErrorDemo() {
         <Stat label={{ ko: `TDoA (${fmt(fD, 3)} Hz) 의 추정 오차`, en: `Estimate error, TDoA (${fmt(fD, 3)} Hz)` }} value={eD * 100} unit="cm" src={SRC} />
         <Stat label={{ ko: '갱신율 비', en: 'Ratio of rates' }} value={fD / fT} unit="×" src={RATE} />
         <Stat label={{ ko: '오차 비', en: 'Ratio of errors' }} value={eT / eD} unit="×" src={SRC} />
+        <Stat label={{ ko: '오차 비 (외란 세기를 고정하면)', en: 'Ratio of errors (disturbance held fixed)' }} value={fixedRatio} unit="×"
+          src={der('ch5#steady-state', { ko: '모르는 가속도를 TDoA 간격마다 새로 뽑고 측정만 드물게 넣은 리카티 반복(위 유도의 "가정이 결과를 바꾸는 곳")', en: 'Riccati iteration with the unknown acceleration redrawn every TDoA interval and only the measurements made rarer ("Where the assumption changes the answer" above)' })} />
       </StatRow>
       <LineChart
         title={{ ko: '위치 갱신율에 따른 정상상태 추정 오차', en: 'Steady-state estimate error versus position update rate' }}
@@ -339,8 +368,8 @@ export function ErrorDemo() {
         ]}
         yDomain={[0, sig * 100 * 1.12]} xDomain={[0, fMax]} height={270} src={SRC} testId="ch3-error-chart" />
       <Caption>{tr({
-        ko: '갱신율이 0 에 가까우면 추정 오차는 측정 한 번의 오차 σ_pos 와 같아지고(평균 낼 것이 없음), 갱신율이 높아질수록 줄어들지만 줄어드는 속도는 점점 느려집니다.',
-        en: 'Near zero rate the estimate is no better than one measurement, σ_pos (nothing to average). It improves with rate, but ever more slowly.',
+        ko: '갱신율이 0 에 가까우면 추정 오차는 측정 한 번의 오차 σ_pos 와 같아지고(평균 낼 것이 없음), 갱신율이 높아질수록 줄어들지만 줄어드는 속도는 점점 느려집니다. 점은 선과 **같은 외란 가정**으로 참값을 만들어 필터를 돌린 결과라서, 계산이 맞는지를 확인해 줄 뿐 외란 가정 자체를 검증하지는 않습니다.',
+        en: 'Near zero rate the estimate is no better than one measurement, σ_pos (nothing to average). It improves with rate, but ever more slowly. The points generate the truth with **the same disturbance assumption** as the line, so they check the computation, not the disturbance assumption itself.',
       })}</Caption>
     </Demo>
   );
@@ -376,7 +405,7 @@ export function VolumeDemo() {
   const centre = (s: Vec[]): Vec => [s.reduce((a, p) => a + p[0], 0) / s.length, s.reduce((a, p) => a + p[1], 0) / s.length];
   const oc = useMemo(() => outsideCount(samples, anchors), [samples, anchors]);
   const last = sweep.xs.length - 1;
-  const SRC = der('ch3#volume', {
+  const SRC = der('ch2#gdop', {
     ko: '선: 2장의 DOP 에 측정 노이즈 σ 를 곱한 값(TDoA 는 이웃 앵커 쌍 기준). 점: 같은 자리에서 잡음을 넣은 측정으로 가우스-뉴턴 측위를 160번 반복한 수평 오차의 RMS. NLOS 는 넣지 않았습니다.',
     en: 'Lines: the DOP of chapter 2 times the measurement noise σ (TDoA uses neighbouring anchor pairs). Points: RMS horizontal error of 160 Gauss–Newton fixes from noisy measurements at the same spot. No NLOS.',
   });
@@ -415,6 +444,7 @@ export function VolumeDemo() {
             <SrcBadge src={der('ch3#volume', { ko: '지금 설정의 대형·경로를 따라 드론 위치를 뽑아, 각 좌표가 앵커 좌표의 최소~최대 사이에 있는지(insideAnchorBox) 센 값', en: 'Drone positions sampled along the current formation path, counting whether each coordinate lies between the smallest and largest anchor coordinate (insideAnchorBox)' })} />
           </p>
           <p class="small muted">{tr({ ko: `비행 고도 ${fmt(z)} m 에서 계산. 채워진 원 = 상자 안의 드론, 빨간 테두리의 빈 원 = 상자 밖의 드론.`, en: `Computed at the flight height ${fmt(z)} m. Filled circle = drone inside the box; hollow circle with red outline = outside.` })}<SrcBadge src={ex('formation.height')} /></p>
+          <p class="small muted">{tr({ ko: '기호의 뜻: △ 벽에서의 TDoA 오차가 강당 중심의 2배를 넘음 · ✓ / ✕ 경로 표본이 모두 앵커 상자 안 / 하나라도 밖.', en: 'Symbols: △ the TDoA error at the wall is more than twice that at the centre · ✓ / ✕ all path samples inside the anchor box / at least one outside.' })}</p>
         </div>
       </div>
       <LineChart
@@ -441,10 +471,12 @@ export function RatePitfall() {
   const cfg = config.value;
   const [mode, setMode] = useState<'twr' | 'tdoa'>('twr');
   const [n, setN] = useState(cfg.nDrones);
+  const [eff, setEff] = useState(1);
   const NMAX = 12;
   const sweep = useMemo(() => {
     const ns = Array.from({ length: NMAX }, (_, i) => i + 1);
-    const run = (m: 'twr' | 'tdoa') => ns.map((k) => computeBudget({ ...cfg, nDrones: k, uwb: { ...cfg.uwb, mode: m } }));
+    // 채널 효율 eff: 충돌·재전송으로 채널 시간 중 쓸모 있는 몫. TWR 의 교환 한 번이 실제로는 T_range/eff 만큼 걸린다고 본다.
+    const run = (m: 'twr' | 'tdoa') => ns.map((k) => computeBudget({ ...cfg, nDrones: k, uwb: { ...cfg.uwb, mode: m, twrRangeTime: m === 'twr' ? cfg.uwb.twrRangeTime / eff : cfg.uwb.twrRangeTime } }));
     const bt = run('twr'), bd = run('tdoa');
     const sa = cfg.estimation.accelNoise;
     const simD = simulateRateError(bd[0].sigmaPosH, bd[0].posRate, sa, 600, 5) * 100;
@@ -453,21 +485,34 @@ export function RatePitfall() {
       simT: bt.map((b, i) => simulateRateError(b.sigmaPosH, b.posRate, sa, 600, 31 + i) * 100),
       simD: ns.map(() => simD),
     };
-  }, [cfg]);
+  }, [cfg, eff]);
   const samples = useCircuit(cfg);
   const ocGlobal = useMemo(() => outsideCount(samples, cfg.anchors), [samples, cfg.anchors]);
   const bt = sweep.bt[n - 1], bd = sweep.bd[n - 1];
   const cur = mode === 'twr' ? bt : bd;
   const spacing = cfg.formation.spacing;
-  const SIG = der('ch3#rate-to-error', {
-    ko: '전역 설정에서 모드와 태그 수만 바꿔 오차 예산을 다시 계산한 값(computeBudget). 선: 정상상태 칼만 필터의 식. 점: 같은 조건으로 필터를 실제로 돌린 시뮬레이션.',
-    en: 'The error budget recomputed from the global settings with only the mode and the tag count changed (computeBudget). Lines: steady-state Kalman formula. Points: simulation of the filter under the same conditions.',
+  // 최소 간격의 분해(8장의 식): 기체 크기 + 무작위 항 k_σ√2·√(σ_est² + σ_trk²) + 나머지(편향·지연·여유)
+  const kS = cfg.safety.kSigma, trk = cfg.safety.trackingError, body = cfg.vehicle.envelope;
+  const randOf = (x: typeof bt) => kS * Math.SQRT2 * Math.hypot(x.sigmaEstH, trk);
+  const restOf = (x: typeof bt) => x.minSepH - body - randOf(x);
+  const SIG = der('ch5#steady-state', {
+    ko: '전역 설정에서 모드와 태그 수(와 이 실험의 채널 효율)만 바꿔 오차 예산을 다시 계산한 값(computeBudget). 선: 정상상태 칼만 필터의 식(5장). 점: 같은 조건으로 필터를 실제로 돌린 시뮬레이션.',
+    en: 'The error budget recomputed from the global settings with only the mode and the tag count (and this experiment\'s channel efficiency) changed (computeBudget). Lines: steady-state Kalman formula (ch. 5). Points: simulation of the filter under the same conditions.',
   });
-  const SEP = der('ch8', { ko: '0장에서 세운 오차 예산의 합(자세한 유도는 8장)을, 모드와 태그 수만 바꿔 다시 계산한 권장 최소 수평 간격', en: 'The sum of the error budget set up in chapter 0 (derived in detail in chapter 8), recomputed with only the mode and tag count changed' });
+  const SEP = der('ch8#budget-sum', { ko: '0장에서 세운 오차 예산의 합(최소 간격의 식은 8장)을, 모드와 태그 수만 바꿔 다시 계산한 권장 최소 간격', en: 'The sum of the error budget set up in chapter 0 (the minimum-spacing formula is in chapter 8), recomputed with only the mode and tag count changed' });
+  const SEPN = (ko: string, en: string) => `{{der:ch8#budget-sum|${ko}|${en}}}`;
   return (
     <Pitfall title={{ ko: '"정확하다니까 TWR 로 5대를 띄우자"', en: '"TWR is the most accurate, so let us fly five on TWR"' }} testId="ch3-pitfall">
       <P ko="TWR 은 가장 정확한 모드라고 문서에 적혀 있습니다{{lit:lps-docs/twr-description}}. 드론 한 대로 시험 비행을 했더니 결과도 좋았습니다. 그래서 같은 설정으로 5대를 띄웁니다. 아래에서 모드와 태그 수를 바꿔 가며, 드론 한 대의 갱신율과 추정 오차, 그리고 그 결과로 권장 간격이 어떻게 달라지는지 보세요. 나머지 값은 모두 전역 설정 그대로입니다."
         en="The docs call TWR the most accurate mode{{lit:lps-docs/twr-description}}. A test flight with one drone looked good, so you fly five with the same setup. Change the mode and the number of tags below and watch the per-drone update rate, the estimate error and the resulting recommended spacing. Everything else stays at the global settings." />
+      <P ko="**먼저 결론부터.** 이 교재의 모델 안에서는 TWR 5대도 숫자로는 크게 나쁘지 않게 나옵니다. 이 함정은 **화면의 숫자가 아니라 숫자를 만든 가정**에 있습니다. 아래에서 그 가정을 하나씩 흔들어 보세요."
+        en="**The conclusion first.** Inside this textbook's model, five drones on TWR do not look much worse in numbers. The trap lies **not in the numbers on screen but in the assumptions that produced them**. Shake those assumptions one by one below." />
+      <Segmented label={{ ko: 'TWR 채널 효율 (충돌·재전송으로 잃는 시간을 뺀 몫)', en: 'TWR channel efficiency (share left after collisions and retransmissions)' }} value={eff} onChange={setEff} testId="ch3-pit-eff" options={[
+        { value: 1, label: { ko: '100% (모델의 가정: 빈틈없이 공평하게)', en: '100% (model assumption: perfect sharing)' } },
+        { value: 0.5, label: '50%' },
+        { value: 0.25, label: '25%' },
+      ]} />
+      <p class="small muted" style={{ marginTop: '-4px' }}>{tr({ ko: '채널 효율은 이 실험에서만 바꾸는 가정입니다. 문헌값이 아니며, 조율 없이 여러 태그가 송신할 때 갱신율이 얼마나 떨어질 수 있는지 감을 잡기 위한 값입니다.', en: 'Channel efficiency is an assumption changed only in this experiment. It is not a literature value; it gives a feel for how far the rate can drop when several tags transmit without coordination.' })}<SrcBadge src={ex(undefined, { ko: '이 실험에서만 바꾸는 가정(문헌값 아님)', en: 'An assumption local to this experiment (not a literature value)' })} /></p>
       <Segmented label={{ ko: '이 실험의 측위 모드', en: 'Positioning mode for this experiment' }} value={mode} onChange={setMode} testId="ch3-pit-mode" options={[
         { value: 'twr', label: { ko: 'TWR (채널을 나눠 씀)', en: 'TWR (channel shared)' } },
         { value: 'tdoa', label: { ko: 'TDoA (듣기만 함)', en: 'TDoA (listen only)' } },
@@ -480,6 +525,7 @@ export function RatePitfall() {
         <Stat label={{ ko: '권장 최소 수평 간격', en: 'Recommended minimum horizontal spacing' }} value={cur.minSepH} unit="m" src={SEP} status={spacing < cur.minSepH ? 'bad' : 'good'} />
         <Stat label={{ ko: '권장 최소 수직 간격', en: 'Recommended minimum vertical spacing' }} value={cur.minSepV} unit="m" src={SEP} />
       </StatRow>
+      <p class="small muted">{tr({ ko: '기호의 뜻: △ TWR 의 드론당 갱신율이 TDoA 의 절반보다 낮음 · ✓ / ✕ 지금 대형 간격이 권장 최소 수평 간격 이상 / 미만.', en: 'Symbols: △ the per-drone TWR rate is below half the TDoA rate · ✓ / ✕ the current formation spacing meets / is below the recommended minimum horizontal spacing.' })}</p>
       <p>
         {spacing < cur.minSepH
           ? <Status kind="bad">{tr({ ko: `지금 대형 간격 ${fmt(spacing)} m 는 이 조건의 권장 최소 간격보다 좁습니다`, en: `The current formation spacing of ${fmt(spacing)} m is tighter than the recommended minimum for this condition` })}</Status>
@@ -497,10 +543,14 @@ export function RatePitfall() {
         ]}
         refLines={[{ x: n, label: { ko: `지금: ${n}대`, en: `Now: ${n}` } }]}
         xDomain={[0.5, NMAX + 0.5]} yDomain={[0, Math.max(...sweep.bt.map((b) => b.sigmaEstH), ...sweep.bd.map((b) => b.sigmaEstH)) * 100 * 1.15]} height={250} src={SIG} testId="ch3-pit-chart" />
-      <P ko={`지금 설정으로 ${n}대일 때: TWR 의 추정 오차는 ${fmt(bt.sigmaEstH * 100, 3)} cm{{der:ch3#rate-to-error}}, TDoA 는 ${fmt(bd.sigmaEstH * 100, 3)} cm{{der:ch3#rate-to-error}} 입니다. 권장 수평 간격으로는 ${fmt(bt.minSepH, 3)} m{{der:ch8|모드만 TWR 로 바꿔 계산한 오차 예산의 합|Sum of the error budget with only the mode set to TWR}} 대 ${fmt(bd.minSepH, 3)} m{{der:ch8|모드만 TDoA 로 바꿔 계산한 오차 예산의 합|Sum of the error budget with only the mode set to TDoA}}, 차이는 ${fmt(Math.abs(bt.minSepH - bd.minSepH) * 100, 2)} cm{{der:ch8|두 값의 차|Difference of the two}} 입니다.`}
-        en={`With the current settings and ${n} drone(s): the estimate error is ${fmt(bt.sigmaEstH * 100, 3)} cm{{der:ch3#rate-to-error}} with TWR and ${fmt(bd.sigmaEstH * 100, 3)} cm{{der:ch3#rate-to-error}} with TDoA. In recommended horizontal spacing that is ${fmt(bt.minSepH, 3)} m{{der:ch8|모드만 TWR 로 바꿔 계산한 오차 예산의 합|Sum of the error budget with only the mode set to TWR}} versus ${fmt(bd.minSepH, 3)} m{{der:ch8|모드만 TDoA 로 바꿔 계산한 오차 예산의 합|Sum of the error budget with only the mode set to TDoA}}, a difference of ${fmt(Math.abs(bt.minSepH - bd.minSepH) * 100, 2)} cm{{der:ch8|두 값의 차|Difference of the two}}.`} />
-      <P ko="간격 차이가 몇 cm 뿐이라고 안심하면 안 됩니다. 이유가 셋 있습니다. 첫째, 공식 문서는 TWR 에서 측위할 수 있는 태그를 1대로 적고 있습니다{{lit:lps-docs/twr-tag-limit}}. 여러 대가 채널을 사이좋게 나눠 쓴다는 것부터가 이 교재의 가정입니다. 둘째, 이 모델에는 패킷 충돌과 재전송이 없습니다. 여러 태그가 조율 없이 송신하면 갱신율은 이 그래프보다 더 떨어집니다. 셋째, 드론이 급하게 움직일수록(위 '갱신율을 올리면…' 데모의 $\sigma_a$ 가 클수록) 낮은 갱신율이 치르는 값은 더 커집니다."
-        en="Do not relax because the spacing differs by only a few centimetres. Three reasons. First, the official docs say TWR can position one tag{{lit:lps-docs/twr-tag-limit}}; several tags politely sharing the channel is already an assumption of this textbook. Second, the model has no packet collisions or retransmissions; tags transmitting without coordination would do worse than this chart. Third, the harder the drones manoeuvre (the larger $\sigma_a$ in the 'How much the estimate improves…' demo above), the more a low update rate costs." />
+      <P ko={`지금 설정으로 ${n}대일 때: TWR 의 추정 오차는 ${fmt(bt.sigmaEstH * 100, 3)} cm{{der:ch5#steady-state}}, TDoA 는 ${fmt(bd.sigmaEstH * 100, 3)} cm{{der:ch5#steady-state}} 입니다. 권장 수평 간격으로는 ${fmt(bt.minSepH, 3)} m${SEPN('모드만 TWR 로 바꿔 계산한 오차 예산의 합', 'Sum of the error budget with only the mode set to TWR')} 대 ${fmt(bd.minSepH, 3)} m${SEPN('모드만 TDoA 로 바꿔 계산한 오차 예산의 합', 'Sum of the error budget with only the mode set to TDoA')}, 차이는 ${fmt(Math.abs(bt.minSepH - bd.minSepH) * 100, 2)} cm${SEPN('두 값의 차', 'Difference of the two')} 입니다.`}
+        en={`With the current settings and ${n} drone(s): the estimate error is ${fmt(bt.sigmaEstH * 100, 3)} cm{{der:ch5#steady-state}} with TWR and ${fmt(bd.sigmaEstH * 100, 3)} cm{{der:ch5#steady-state}} with TDoA. In recommended horizontal spacing that is ${fmt(bt.minSepH, 3)} m${SEPN('모드만 TWR 로 바꿔 계산한 오차 예산의 합', 'Sum of the error budget with only the mode set to TWR')} versus ${fmt(bd.minSepH, 3)} m${SEPN('모드만 TDoA 로 바꿔 계산한 오차 예산의 합', 'Sum of the error budget with only the mode set to TDoA')}, a difference of ${fmt(Math.abs(bt.minSepH - bd.minSepH) * 100, 2)} cm${SEPN('두 값의 차', 'Difference of the two')}.`} />
+      <P ko={`**간격은 어떻게 나왔나**(8장의 식). TWR: 기체 크기 {{cfg:vehicle.envelope}} 를 빼고 보면, 무작위 항 $k_\\sigma\\sqrt2\\,\\sqrt{\\sigma_{\\text{est}}^2 + \\sigma_{\\text{trk}}^2}$ = ${fmt(randOf(bt), 3)} m${SEPN('k_σ·√2·√(σ_est² + σ_trk²), TWR', 'k_σ·√2·√(σ_est² + σ_trk²), TWR')}, 나머지(앵커 편향·지연·여유) ${fmt(restOf(bt), 3)} m${SEPN('최소 간격 − 기체 크기 − 무작위 항', 'Minimum spacing − body size − random term')}. TDoA: 무작위 항 ${fmt(randOf(bd), 3)} m${SEPN('k_σ·√2·√(σ_est² + σ_trk²), TDoA', 'k_σ·√2·√(σ_est² + σ_trk²), TDoA')}, 나머지 ${fmt(restOf(bd), 3)} m${SEPN('최소 간격 − 기체 크기 − 무작위 항', 'Minimum spacing − body size − random term')}. 모드에 따라 크게 바뀌는 것은 무작위 항입니다(나머지 항도 모드마다 DOP 가 달라 몇 mm 다릅니다). 그런데 $\\sigma_{\\text{est}}$ 는 추종 오차 $\\sigma_{\\text{trk}}$ = {{cfg:safety.trackingError}} 와 **제곱합**으로 묶이므로, $\\sigma_{\\text{est}}$ 의 차이 × $k_\\sigma\\sqrt2$ 가 간격 차이로 그대로 옮겨지지 않습니다.`}
+        en={`**Where the spacing comes from** (the formula of chapter 8). TWR: leaving out the body size {{cfg:vehicle.envelope}}, the random term $k_\\sigma\\sqrt2\\,\\sqrt{\\sigma_{\\text{est}}^2 + \\sigma_{\\text{trk}}^2}$ = ${fmt(randOf(bt), 3)} m${SEPN('k_σ·√2·√(σ_est² + σ_trk²), TWR', 'k_σ·√2·√(σ_est² + σ_trk²), TWR')} and the rest (anchor bias, delays, margin) ${fmt(restOf(bt), 3)} m${SEPN('최소 간격 − 기체 크기 − 무작위 항', 'Minimum spacing − body size − random term')}. TDoA: random term ${fmt(randOf(bd), 3)} m${SEPN('k_σ·√2·√(σ_est² + σ_trk²), TDoA', 'k_σ·√2·√(σ_est² + σ_trk²), TDoA')}, rest ${fmt(restOf(bd), 3)} m${SEPN('최소 간격 − 기체 크기 − 무작위 항', 'Minimum spacing − body size − random term')}. The term that changes much with the mode is the random one (the rest differs by a few mm because the DOP differs per mode). But $\\sigma_{\\text{est}}$ is combined with the tracking error $\\sigma_{\\text{trk}}$ = {{cfg:safety.trackingError}} **in quadrature**, so the difference in $\\sigma_{\\text{est}}$ times $k_\\sigma\\sqrt2$ does not carry over to the spacing one to one.`} />
+      <P ko="여기 나온 추정 오차가 위 '갱신율을 올리면…' 데모의 타일과 조금 다른 것은, 거기서는 두 모드의 측정 한 번의 오차 $\sigma_{\text{pos}}$ 를 같게 두었고 여기서는 모드마다 실제 설정(측정 노이즈와 DOP)이 달라지기 때문입니다."
+        en="The estimate errors here differ slightly from the tiles of the 'How much the estimate improves…' demo above: there the single-measurement error $\sigma_{\text{pos}}$ was the same for both modes; here each mode uses its own settings (measurement noise and DOP)." />
+      <P ko="간격 차이가 몇 cm 뿐이라고 안심하면 안 됩니다. 이 모델이 빼먹은 것이 셋 있습니다. 첫째, 공식 문서는 TWR 에서 측위할 수 있는 태그를 1대로 적고 있습니다{{lit:lps-docs/twr-tag-limit}}. 여러 대가 채널을 사이좋게 나눠 쓴다는 것부터가 이 교재의 가정입니다. 둘째, 이 모델에는 패킷 충돌과 재전송이 없습니다. 여러 태그가 조율 없이 송신하면 갱신율은 더 떨어집니다. 위의 채널 효율을 낮춰 보면 그 방향이 보입니다. 셋째, 드론이 급하게 움직일수록(위 '갱신율을 올리면…' 데모의 $\sigma_a$ 가 클수록) 낮은 갱신율이 치르는 값은 더 커집니다."
+        en="Do not relax because the spacing differs by only a few centimetres. The model leaves out three things. First, the official docs say TWR can position one tag{{lit:lps-docs/twr-tag-limit}}; several tags politely sharing the channel is already an assumption of this textbook. Second, the model has no packet collisions or retransmissions; tags transmitting without coordination would do worse. Lower the channel efficiency above to see the direction. Third, the harder the drones manoeuvre (the larger $\sigma_a$ in the 'How much the estimate improves…' demo above), the more a low update rate costs." />
       <h3>{tr({ ko: '반대쪽 함정: TDoA 를 골랐으니 끝났다고 생각하기', en: 'The opposite trap: choosing TDoA and thinking you are done' })}</h3>
       <P ko="TDoA 로 바꾸면 갱신율 문제는 사라지지만, 이번에는 **어디를 나는가**가 문제가 됩니다. 위의 '앵커를 무대 주변에만 달고…' 데모에서 본 것처럼, 앵커가 둘러싼 상자를 벗어나면 TDoA 의 위치 오차는 빠르게 커집니다. 이륙 직후처럼 가장 낮은 앵커보다 아래에 있을 때도 상자 밖입니다. 앵커를 직접 끌어 옮기며 확인하는 실험은 [2장](#/ch/2)의 함정 실험실에 있습니다."
         en="Switching to TDoA removes the rate problem, but now **where you fly** matters. As the 'Anchors only around the stage' demo above showed, the TDoA position error grows quickly once you leave the box enclosed by the anchors. Just after take-off, below the lowest anchor, you are also outside the box. The experiment where you drag the anchors yourself is in the pitfall lab of [chapter 2](#/ch/2)." />

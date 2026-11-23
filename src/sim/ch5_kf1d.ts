@@ -199,3 +199,30 @@ export function simulateDelayed1d(p: Delay1dParams): Delay1dResult {
   out.rmsNaive = Math.sqrt(acc.a2 / m); out.rmsBuffered = Math.sqrt(acc.b2 / m); out.rmsIdeal = Math.sqrt(acc.c2 / m);
   return out;
 }
+
+/**
+ * UWB+IMU 융합 데모(5장)의 이론값: 한 축의 등속 모델을 predictRate [Hz] 로 예측하고(가속도 입력 오차 1σ = sigmaA),
+ * updateEvery 스텝마다 위치 측정(1σ = measSigma) 하나로 갱신할 때의 정상상태.
+ * 반환값은 한 주기(갱신 직후 1스텝 + 예측만 한 updateEvery−1 스텝)에 걸친 위치 분산 평균의 제곱근 [m]
+ * — 모든 예측 스텝에서 잰 RMSE 와 비교하기 위한 값이다.
+ */
+export function fusedSteadySigma(measSigma: number, predictRate: number, updateEvery: number, sigmaA: number): number {
+  const dt = 1 / predictRate, n = Math.max(1, Math.round(updateEvery)), R = measSigma * measSigma;
+  const q = sigmaA * sigmaA, q11 = (q * dt ** 4) / 4, q12 = (q * dt ** 3) / 2, q22 = q * dt * dt;
+  let a = R, c = 0, d = 1; // 갱신 전 공분산 [[a, c], [c, d]]
+  let avg = 0;
+  for (let it = 0; it < 20000; it++) {
+    const S = a + R, k1 = a / S, k2 = c / S;
+    let pa = a - k1 * a, pc = c - k1 * c, pd = d - k2 * c; // (I − K H) P⁻
+    let sum = pa;
+    for (let s = 1; s <= n; s++) {
+      const na = pa + 2 * dt * pc + dt * dt * pd + q11, nc = pc + dt * pd + q12, nd = pd + q22;
+      pa = na; pc = nc; pd = nd;
+      if (s < n) sum += pa;
+    }
+    const next = sum / n, done = Math.abs(next - avg) <= 1e-13 * next;
+    avg = next; a = pa; c = pc; d = pd;
+    if (done) break;
+  }
+  return Math.sqrt(Math.max(avg, 0));
+}

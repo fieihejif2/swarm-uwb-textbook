@@ -17,6 +17,9 @@ export interface McPanelProps {
   /** 히스토그램으로 그릴 지표 이름 */
   metric: string;
   xLabel: L;
+  /** 통계 카드 표시용: 값 × scale 을 unit 으로 (예: m → cm 이면 scale 100, unit 'cm'). 없으면 축 라벨의 [단위] */
+  unit?: string;
+  scale?: number;
   refLines?: RefLine[];
   /** 히스토그램에 겹쳐 그릴 이론 밀도 */
   theory?: { name: L | string; pdf: (x: number) => number };
@@ -36,6 +39,7 @@ export function McPanel(p: McPanelProps) {
   const [seed, setSeed] = useState(1);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
+  const startedAt = useRef(0);
   const [results, setResults] = useState<Record<string, number>[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const worker = useRef<Worker | null>(null);
@@ -44,7 +48,7 @@ export function McPanel(p: McPanelProps) {
   const stop = () => { worker.current?.terminate(); worker.current = null; setBusy(false); };
   const start = () => {
     stop();
-    setBusy(true); setProgress(0); setError(null);
+    setBusy(true); setProgress(0); setError(null); startedAt.current = performance.now();
     const w = new Worker(new URL('../workers/mc.worker.ts', import.meta.url), { type: 'module' });
     worker.current = w;
     const id = ++reqId.current;
@@ -57,6 +61,8 @@ export function McPanel(p: McPanelProps) {
     w.onerror = (e) => { setError(e.message); setBusy(false); };
     w.postMessage({ id, experiment: p.experiment, params: p.params, seeds: Array.from({ length: runs }, (_, i) => seed * 100003 + i) });
   };
+  const sc = p.scale ?? 1;
+  const un = p.unit ?? (tr(p.xLabel).match(/\[([^\]]+)\]\s*$/)?.[1] ?? '');
   const vals = results ? results.map((r) => r[p.metric]).filter(Number.isFinite) : [];
   const flagged = p.threshold && results ? results.filter((r) => (p.threshold!.above ? r[p.metric] > p.threshold!.value : r[p.metric] < p.threshold!.value)).length : 0;
   const src = p.src ?? der(undefined, { ko: '설정값을 입력으로 교재의 모델을 반복 실행한 결과', en: 'Repeated runs of the textbook model with the current settings' });
@@ -77,6 +83,9 @@ export function McPanel(p: McPanelProps) {
           ? <button type="button" class="btn primary" onClick={start} data-testid={p.testId ? `${p.testId}-run` : undefined}>{tr({ ko: '▶ 돌리기', en: '▶ Run' })}</button>
           : <button type="button" class="btn" onClick={stop}>{tr({ ko: '■ 중지', en: '■ Stop' })}</button>}
         {busy && <progress value={progress} max={1} aria-label={tr({ ko: '진행률', en: 'Progress' })} style={{ flex: 1, minWidth: '80px' }} />}
+        {busy && progress > 0.02 && (
+          <span class="small muted num">{tr({ ko: '남은 시간 약 ', en: 'about ' })}{Math.max(1, Math.round(((performance.now() - startedAt.current) / 1000) * (1 / progress - 1)))}{tr({ ko: '초', en: ' s left' })}</span>
+        )}
       </div>
       <div aria-live="polite">
         {error && <p><span class="status bad">✕ {error}</span></p>}
@@ -84,9 +93,9 @@ export function McPanel(p: McPanelProps) {
           <div data-testid={p.testId ? `${p.testId}-result` : undefined}>
             <Histogram values={vals} xLabel={p.xLabel} refLines={p.refLines} range={p.range} theory={p.theory} src={src} />
             <div class="stat-row">
-              <div class="stat"><div class="k">{tr({ ko: '평균', en: 'Mean' })}<SrcBadge src={src} /></div><div class="v">{fmt(mean(vals))}</div></div>
-              <div class="stat"><div class="k">{tr({ ko: '5% ~ 95%', en: '5% – 95%' })}<SrcBadge src={src} /></div><div class="v">{fmt(quantile(vals, 0.05))} ~ {fmt(quantile(vals, 0.95))}</div></div>
-              <div class="stat"><div class="k">{tr({ ko: '최소', en: 'Min' })}<SrcBadge src={src} /></div><div class="v">{fmt(Math.min(...vals))}</div></div>
+              <div class="stat"><div class="k">{tr({ ko: '평균', en: 'Mean' })}<SrcBadge src={src} /></div><div class="v">{fmt(mean(vals) * sc)}{un && <small>{un}</small>}</div></div>
+              <div class="stat"><div class="k">{tr({ ko: '5% ~ 95%', en: '5% – 95%' })}<SrcBadge src={src} /></div><div class="v">{fmt(quantile(vals, 0.05) * sc)} ~ {fmt(quantile(vals, 0.95) * sc)}{un && <small>{un}</small>}</div></div>
+              <div class="stat"><div class="k">{tr({ ko: '최소', en: 'Min' })}<SrcBadge src={src} /></div><div class="v">{fmt(Math.min(...vals) * sc)}{un && <small>{un}</small>}</div></div>
               {p.threshold && (
                 <div class="stat"><div class="k">{rich(p.threshold.label)}<SrcBadge src={src} /></div>
                   <div class="v" style={flagged ? { color: 'var(--critical-text)' } : undefined}>{flagged ? '✕ ' : '✓ '}{flagged} / {results.length}</div></div>

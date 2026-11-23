@@ -16,10 +16,15 @@ def tdoa_update(x, P, a_i, a_j, z, sigma):
     a_i = np.asarray(a_i, dtype=float)
     a_j = np.asarray(a_j, dtype=float)
     p = x[:3]                    # 위치 [m] (상태의 앞 3칸)
+                                 # position [m] (first 3 entries of the state)
     # 1) 두 앵커까지의 거리 d_i, d_j 와 예측 측정값 h = d_j - d_i
+    # 1) distances d_i, d_j to the two anchors and predicted measurement h = d_j - d_i
     # 2) 야코비안 H (길이 6): 위치 칸만 채우고 속도 칸은 0
+    # 2) Jacobian H (length 6): fill the position entries, velocity entries are 0
     # 3) 혁신 분산 S = H P H^T + sigma^2   (스칼라)
+    # 3) innovation variance S = H P H^T + sigma^2   (scalar)
     # 4) 칼만 이득 K = P H^T / S           (길이 6)
+    # 4) Kalman gain K = P H^T / S           (length 6)
     # 5) x_new = x + K (z - h),  P_new = (I - K H) P
     x_new = x.copy()
     P_new = P.copy()

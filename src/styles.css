@@ -256,6 +256,7 @@ code, kbd { font-family: var(--mono); font-size: 0.9em; background: var(--surfac
 .status { display: inline-flex; align-items: center; gap: 6px; font-weight: 650; padding: 2px 10px; border-radius: 999px; font-size: 0.86rem; }
 .status.good { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good-text); }
 .status.warn { background: color-mix(in srgb, var(--warning) 22%, transparent); color: var(--warning-text); }
+.status.info { background: var(--accent-soft); color: var(--text); }
 .status.bad { background: color-mix(in srgb, var(--critical) 16%, transparent); color: var(--critical-text); }
 .next-link { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 28px; }
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 16px; align-items: start; }
@@ -547,6 +548,70 @@ table.tbl tr:last-child td { border-bottom: 0; }
   .section > h2 { font-size: 1.32rem; }
   .chapter-head h1 { font-size: 1.75rem; }
 }
+
+/* ═════════ 1라운드 UX 리뷰 반영 ═════════ */
+:root { --text-3: #6b6a64; }
+/* 선택된 버튼: 바탕색만이 아니라 강조색 밑줄로도 표시 */
+.seg button[aria-pressed='true'] { box-shadow: inset 0 -2px 0 var(--accent), 0 1px 3px rgba(0, 0, 0, 0.12); font-weight: 650; }
+:root[data-theme='dark'] .seg button[aria-pressed='true'] { background: var(--surface-3); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme='light']) .seg button[aria-pressed='true'] { background: var(--surface-3); } }
+/* 주요 버튼 대비 */
+.btn.primary { font-weight: 650; }
+:root[data-theme='dark'] .btn.primary { background: #2563c4; border-color: #2563c4; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme='light']) .btn.primary { background: #2563c4; border-color: #2563c4; } }
+.btn { white-space: normal; text-align: left; }
+/* 그래프 툴팁: 행마다 한 줄 */
+.plot-tip { line-height: 1.35; }
+.plot-tip .tip-row { display: flex; align-items: center; gap: 4px; }
+/* 카드 안의 별행 수식은 카드 폭 전체를 쓴다 */
+.card .math-block { max-width: none; }
+/* 하단 예산 패널: 불투명 바탕, 좁은 화면에서는 표를 가로로 스크롤 */
+.budgetbar .panel { background: var(--surface); }
+.budget-table { min-width: 680px; }
+/* 출처 배지: 글자를 조금 키우고, 터치 기기에서는 누르는 영역을 넓힌다 */
+.badge { font-size: 10.5px; position: relative; }
+@media (pointer: coarse) { .badge::after { content: ''; position: absolute; inset: -9px -4px; } }
+/* 채점 결과의 긴 출력은 높이를 제한 */
+.grade-out { max-height: 7.5em; overflow: auto; }
+/* 터치 대상 */
+.plot-foot button { padding: 6px 4px; }
+.check { min-height: 36px; }
+@media (pointer: coarse) { .kbd-hint { display: none; } }
+@media (max-width: 600px) {
+  .editor textarea { font-size: 0.78rem; padding-left: 40px; }
+  .editor .gutter { width: 32px; font-size: 0.78rem; }
+  /* 재생 막대: 슬라이더가 한 줄 전체를 쓰도록 */
+  .player { flex-wrap: wrap; }
+  .player input[type='range'] { flex-basis: 100%; order: -1; }
+}
+
+/* ═════════ 1라운드 UX 리뷰 반영 (5~9장 공통) ═════════ */
+/* 주요 버튼: 흰 글자 대비 4.5:1 이상 */
+.btn.primary { background: #2266c4; border-color: #2266c4; }
+.sidebar a.nav-item[aria-current='page'] .nav-num { background: #2266c4; }
+/* 코드: 합자 끄기(!= 가 ≠ 로 보이지 않게) */
+code, pre, .codeview, .editor textarea, .editor .gutter { font-variant-ligatures: none; font-feature-settings: 'liga' 0, 'calt' 0; }
+/* 표 첫 열: 너무 좁아져 글자가 세로로 쌓이지 않게. 넘치면 표가 가로로 스크롤된다 */
+table.tbl th:first-child, table.tbl td:first-child { min-width: 7.5em; word-break: keep-all; overflow-wrap: normal; }
+/* 가로로 넘치는 수식·표·코드: 스크롤할 수 있다는 그림자 표시 */
+.math-block, .table-wrap, .codeview {
+  background:
+    linear-gradient(to right, var(--surface), var(--surface)) left / 16px 100% no-repeat local,
+    linear-gradient(to left, var(--surface), var(--surface)) right / 16px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, rgba(0, 0, 0, 0.16), transparent) left / 10px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, 0.16), transparent) right / 10px 100% no-repeat scroll;
+}
+.codeview { background-color: var(--surface-2); }
+.card.derivation .math-block { background-color: var(--surface); }
+/* 터치 대상 */
+.header .brand { padding: 6px 0; }
+.budget-table .btn.small, .budget-table .btn { min-height: 32px; }
+
+/* SVG 글자: 그래프(.plot) 밖에서 그린 그림에도 테마 색이 적용되게 */
+svg .tick, svg .axis-label { fill: var(--text-2); }
+svg .ref-label { fill: var(--text-2); paint-order: stroke; stroke: var(--surface); stroke-width: 3px; }
+svg text:not([fill]) { fill: var(--text); }
+svg text.tick:not([fill]), svg text.axis-label:not([fill]), svg text.ref-label:not([fill]) { fill: var(--text-2); }
 
 /* ───────── 인쇄 (우리 시스템 리포트) ───────── */
 @media print {

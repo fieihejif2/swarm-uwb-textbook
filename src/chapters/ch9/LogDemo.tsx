@@ -3,12 +3,12 @@ import { useMemo, useState } from 'preact/hooks';
 import { L, fix, fmt, tr } from '../../app/i18n';
 import { budget, config } from '../../app/store';
 import {
-  LOG_COLUMNS, LogCheck, LogKind, MIN_ROWS, calibrateMeasSigma, checkLog, detrendSeries, effectiveN, fitNlosTail, lag1, lossSequence, predictStatic, rangeGroups,
-  sampleDriftLog, sampleLatencyLog, sampleRangeLog, sampleStaticLog, sigmaRelStdErr, triangularPdf,
+  LOG_COLUMNS, LogCheck, LogKind, MIN_ROWS, anchorBiasSpread, calibrateMeasSigma, jitterFromHalfWidth, checkLog, detrendSeries, effectiveN, fitNlosTail, lag1, lossSequence, predictStatic, rangeGroups,
+  SAMPLE_MEASUREMENT, sampleDriftLog, sampleLatencyLog, sampleRangeLog, sampleStaticLog, sigmaRelStdErr, triangularPdf,
 } from '../../sim/ch9_measure';
 import { column, fitLatencyLog, fitRangeLog, fitStaticLog } from '../../sim/logfit';
-import { burstLengthQuantile, lossRunLengths } from '../../sim/loss';
-import { normPdf, quantile, rms } from '../../sim/stats';
+import { burstLengthQuantile, lossRunLengths, stationaryLossRate } from '../../sim/loss';
+import { normPdf, quantile } from '../../sim/stats';
 import { der, ex } from '../../sources';
 import { Button, Demo, LineChart, NumberField, P, Segmented, SrcBadge, Stat, StatRow, Status, T } from '../../ui';
 import { ApplyRow, DataHist, LossStrip, Num, fromFile } from './parts';
@@ -54,11 +54,29 @@ function warningText(code: string, count: number): L {
 }
 
 /** 파일 입력 + 샘플 버튼 + 형식 검사 결과 */
+/** 샘플이 지금 설정이 아니라 고정된 "예시 측정"으로 만들어진다는 안내(반영하면 무엇이 바뀌는지 보이게 하려고 일부러 다르게 잡았다) */
+const cm = (v: number) => `${fmt(v * 100, 3)} cm{{ex}}`, msx = (v: number) => `${fmt(v * 1000, 3)} ms{{ex}}`;
+const SAMPLE_NOTE_TEXT: Record<LogKind, { ko: string; en: string }> = {
+  static: {
+    ko: `샘플은 지금 설정이 아니라 고정된 **예시 측정**(TDoA 노이즈 ${cm(SAMPLE_MEASUREMENT.sigmaTdoa)}, TWR 노이즈 ${cm(SAMPLE_MEASUREMENT.sigmaTwr)})으로 만듭니다. 앵커 배치와 모드는 지금 설정을 씁니다. 그래서 '전역 설정에 반영'을 누르면 측정 노이즈 설정이 이 값 쪽으로 바뀝니다.`,
+    en: `The sample is generated not from the current settings but from a fixed **example measurement** (TDoA noise ${cm(SAMPLE_MEASUREMENT.sigmaTdoa)}, TWR noise ${cm(SAMPLE_MEASUREMENT.sigmaTwr)}); the anchor layout and mode are the current ones. 'Apply to the global settings' therefore moves the measurement-noise setting towards these values.`,
+  },
+  range: {
+    ko: `샘플은 지금 설정이 아니라 고정된 **예시 측정**(TWR 노이즈 ${cm(SAMPLE_MEASUREMENT.sigmaTwr)})으로 만듭니다. 앵커 배치와 NLOS 비율은 지금 설정을 씁니다. 그래서 '전역 설정에 반영'을 누르면 TWR 노이즈 설정이 바뀝니다.`,
+    en: `The sample is generated not from the current settings but from a fixed **example measurement** (TWR noise ${cm(SAMPLE_MEASUREMENT.sigmaTwr)}); the anchor layout and NLOS rate are the current ones. 'Apply to the global settings' therefore changes the TWR noise setting.`,
+  },
+  latency: {
+    ko: `샘플은 지금 설정이 아니라 고정된 **예시 측정**(편도 지연 ${msx(SAMPLE_MEASUREMENT.delayMean)}, 지터 ${msx(SAMPLE_MEASUREMENT.delayJitter)})으로 만듭니다. 방송 주기와 손실 모델은 지금 설정을 씁니다. 그래서 '전역 설정에 반영'을 누르면 지연 설정이 바뀝니다.`,
+    en: `The sample is generated not from the current settings but from a fixed **example measurement** (one-way delay ${msx(SAMPLE_MEASUREMENT.delayMean)}, jitter ${msx(SAMPLE_MEASUREMENT.delayJitter)}); the broadcast rate and loss model are the current ones. 'Apply to the global settings' therefore changes the delay settings.`,
+  },
+};
+
 function Loader({ kind, loaded, check, onLoad, samples }: {
   kind: LogKind; loaded: Loaded | null; check: LogCheck | null; onLoad: (l: Loaded | null) => void;
   samples: { label: L; make: () => Loaded; testId: string }[];
 }) {
   const [fileErr, setFileErr] = useState<L | null>(null);
+  const [kbFocus, setKbFocus] = useState(false);
   const onFile = async (e: Event) => {
     const input = e.target as HTMLInputElement;
     const f = input.files?.[0];
@@ -79,8 +97,9 @@ function Loader({ kind, loaded, check, onLoad, samples }: {
   return (
     <div style={{ marginBottom: '12px' }}>
       <div class="btn-row">
-        <label class="btn" for={inputId} style={{ cursor: 'pointer' }}>{tr({ ko: '📂 내 CSV 파일 고르기', en: '📂 Choose my CSV file' })}</label>
+        <label class="btn" for={inputId} style={{ cursor: 'pointer', outline: kbFocus ? '2px solid var(--accent)' : undefined, outlineOffset: '2px' }}>{tr({ ko: '📂 내 CSV 파일 고르기', en: '📂 Choose my CSV file' })}</label>
         <input id={inputId} type="file" accept=".csv,.txt,text/csv,text/plain" class="sr-only" onChange={onFile} data-testid={`ch9-file-${kind}`}
+          onFocus={(e) => setKbFocus((e.target as HTMLElement).matches(':focus-visible'))} onBlur={() => setKbFocus(false)}
           aria-label={tr({ ko: `${KIND_LABEL[kind].ko} CSV 파일 고르기 (열: ${LOG_COLUMNS[kind].join(',')})`, en: `Choose a CSV file for ${KIND_LABEL[kind].en} (columns: ${LOG_COLUMNS[kind].join(',')})` })} />
         {samples.map((s) => <Button key={s.testId} onClick={() => { setFileErr(null); onLoad(s.make()); }} testId={s.testId}>{tr(s.label)}</Button>)}
         {loaded && <button type="button" class="btn ghost small" onClick={() => onLoad(null)}>{tr({ ko: '비우기', en: 'Clear' })}</button>}
@@ -88,7 +107,10 @@ function Loader({ kind, loaded, check, onLoad, samples }: {
       <p class="small muted" style={{ margin: '6px 0 0' }}>
         <T ko={`필요한 열: \`${LOG_COLUMNS[kind].join(',')}\`. 같은 종류의 샘플 파일: `} en={`Required columns: \`${LOG_COLUMNS[kind].join(',')}\`. A sample file of this kind: `} />
         <a href={`${import.meta.env.BASE_URL}samples/${SAMPLE_FILE[kind]}`} download>{SAMPLE_FILE[kind]}</a>
-        <T ko=" (기본 설정으로 만든 합성 데이터)." en=" (synthetic data generated with the default settings)." />
+        <T ko=" (기본 앵커 배치로 만든 합성 데이터)." en=" (synthetic data generated with the default anchor layout)." />
+      </p>
+      <p class="small muted" style={{ margin: '4px 0 0' }} data-testid={`ch9-sample-note-${kind}`}>
+        <T {...SAMPLE_NOTE_TEXT[kind]} />
       </p>
       <div aria-live="polite">
         {fileErr && <p style={{ marginTop: '8px' }}><Status kind="bad">{tr(fileErr)}</Status><SrcBadge src={LIMIT} /></p>}
@@ -133,13 +155,15 @@ function StaticTab({ loaded, onLoad }: { loaded: Loaded | null; onLoad: (l: Load
     const pred = predictStatic(cfg, p);
     const cal = inHall ? calibrateMeasSigma(cfg, p, res.fit.sigmaH) : NaN;
     const after = Number.isFinite(cal) ? predictStatic(cfg, p, cal) : null;
-    return { p, inHall, pred, cal, after };
+    // σ_a 를 가속도계 잡음으로 보는 해석(정지 중에도 있음)이면 같은 로그에서 더 작은 σ 가 나온다 → 참 σ 는 둘 사이
+    const calFlight = inHall ? calibrateMeasSigma(cfg, p, res.fit.sigmaH, 'flight') : NaN;
+    return { p, inHall, pred, cal, after, calFlight };
   }, [res, cfg]);
   return (
     <div data-testid="ch9-static">
       <Loader kind="static" loaded={loaded} check={check} onLoad={onLoad} samples={[
-        { label: { ko: '샘플 불러오기', en: 'Load sample' }, testId: 'ch9-sample-static', make: () => ({ name: tr({ ko: '샘플: 정지 로그 (지금 설정으로 생성)', en: 'Sample: static log (generated from the current settings)' }), text: sampleStaticLog(cfg), sample: true }) },
-        { label: { ko: '드리프트가 섞인 샘플', en: 'Sample with drift' }, testId: 'ch9-sample-drift', make: () => ({ name: tr({ ko: '샘플: 드리프트가 섞인 정지 로그', en: 'Sample: static log with drift' }), text: sampleDriftLog(cfg), sample: true }) },
+        { label: { ko: '샘플 불러오기', en: 'Load sample' }, testId: 'ch9-sample-static', make: () => ({ name: tr({ ko: '샘플: 정지 로그 (예시 측정값으로 생성)', en: 'Sample: static log (generated from the example measurement)' }), text: sampleStaticLog(cfg), sample: true }) },
+        { label: { ko: '드리프트가 섞인 샘플', en: 'Sample with drift' }, testId: 'ch9-sample-drift', make: () => ({ name: tr({ ko: '샘플: 드리프트가 섞인 정지 로그 (예시 측정값)', en: 'Sample: static log with drift (example measurement)' }), text: sampleDriftLog(cfg), sample: true }) },
       ]} />
       {res && model && (() => {
         const { fit, det, rho, t, cols } = res;
@@ -226,8 +250,8 @@ function StaticTab({ loaded, onLoad }: { loaded: Loaded | null; onLoad: (l: Load
               label={{ ko: `역산한 ${mode === 'twr' ? 'TWR 거리' : 'TDoA 거리차'} 측정 노이즈 σ (수평 흔들림이 측정과 같아지는 값)`, en: `Back-calculated ${mode === 'twr' ? 'TWR range' : 'TDoA range-difference'} noise σ (the value that reproduces the measured horizontal jitter)` }}
               src={fromFile('static-check', '모델의 정지 흔들림이 로그의 σ_H 와 같아지도록 이분법으로 찾은 측정 노이즈', 'Measurement noise found by bisection so that the model’s parked jitter equals σ_H of the log')}
               note={model.after
-                ? <T ko={`이 값을 넣으면 모델의 수직 예측은 ${fmt(model.after.staticV * 100, 3)} cm{{der:ch9#static-check}} 가 됩니다. 로그의 수직 값(${fmt(fit.sigmaV * 100, 3)} cm{{der:ch9#sigma-fit}})과 크게 다르면 앵커 좌표나 높이 배치(2장)를 다시 보세요. 원시 거리·거리차를 직접 기록할 수 있다면 ② 탭의 방법이 더 직접적입니다.`}
-                    en={`With this value the model predicts ${fmt(model.after.staticV * 100, 3)} cm{{der:ch9#static-check}} vertically. If that is far from the vertical value of the log (${fmt(fit.sigmaV * 100, 3)} cm{{der:ch9#sigma-fit}}), revisit the anchor coordinates or their height layout (chapter 2). If you can log raw ranges or range differences, the method of tab ② is more direct.`} />
+                ? <T ko={`${Number.isFinite(model.calFlight) ? `이 역산은 5장의 $\\sigma_a$ 를 '모르는 움직임'(정지 중에는 없음)으로 봅니다. $\\sigma_a$ 를 정지 중에도 있는 가속도계 잡음으로 보면 같은 로그에서 ${fmt(model.calFlight * 100, 3)} cm{{der:ch9#static-check|σ_a 를 정지 중에도 있는 잡음으로 보고(비행 중 식) 역산한 값|Back-calculated treating σ_a as noise present at rest too (in-flight formula)}} 가 나오므로, 참값은 두 값 사이에 있다고 보면 됩니다. ` : ''}이 값을 넣으면 모델의 수직 예측은 ${fmt(model.after.staticV * 100, 3)} cm{{der:ch9#static-check}} 가 됩니다. 로그의 수직 값(${fmt(fit.sigmaV * 100, 3)} cm{{der:ch9#sigma-fit}})과 크게 다르면 앵커 좌표나 높이 배치(2장)를 다시 보세요. 원시 거리·거리차를 직접 기록할 수 있다면 ② 탭의 방법이 더 직접적입니다.`}
+                    en={`${Number.isFinite(model.calFlight) ? `This back-calculation treats $\\sigma_a$ of chapter 5 as 'unknown motion' (absent at rest). If $\\sigma_a$ is accelerometer noise that is present at rest too, the same log gives ${fmt(model.calFlight * 100, 3)} cm{{der:ch9#static-check|σ_a 를 정지 중에도 있는 잡음으로 보고(비행 중 식) 역산한 값|Back-calculated treating σ_a as noise present at rest too (in-flight formula)}}, so take the true value to lie between the two. ` : ''}With this value the model predicts ${fmt(model.after.staticV * 100, 3)} cm{{der:ch9#static-check}} vertically. If that is far from the vertical value of the log (${fmt(fit.sigmaV * 100, 3)} cm{{der:ch9#sigma-fit}}), revisit the anchor coordinates or their height layout (chapter 2). If you can log raw ranges or range differences, the method of tab ② is more direct.`} />
                 : tr({ ko: '이 로그로는 역산할 수 없습니다(측정값이 모델이 낼 수 있는 범위 밖이거나 위치가 강당 밖).', en: 'Cannot back-calculate from this log (the measured value is outside what the model can produce, or the position is outside the hall).' })} />
           </>
         );
@@ -253,7 +277,7 @@ function RangeTab({ loaded, onLoad }: { loaded: Loaded | null; onLoad: (l: Loade
       <Loader kind="range" loaded={loaded} check={check} onLoad={(l) => { setSel(0); onLoad(l); }} samples={[
         { label: { ko: '샘플 불러오기', en: 'Load sample' }, testId: 'ch9-sample-range', make: () => {
           const s = sampleRangeLog(cfg);
-          return { name: tr({ ko: '샘플: 거리 로그 (지금 설정으로 생성)', en: 'Sample: range log (generated from the current settings)' }), text: s.text, sample: true, truth: Object.fromEntries(s.dists.map((d, i) => [i, d])) };
+          return { name: tr({ ko: '샘플: 거리 로그 (예시 측정값으로 생성)', en: 'Sample: range log (generated from the example measurement)' }), text: s.text, sample: true, truth: Object.fromEntries(s.dists.map((d, i) => [i, d])) };
         } },
       ]} />
       {groups && rows && (() => {
@@ -266,7 +290,8 @@ function RangeTab({ loaded, onLoad }: { loaded: Loaded | null; onLoad: (l: Loade
         const sc = pooledSigma * 100;
         const known = groups.filter((x) => Number.isFinite(truth[x.anchor]));
         const medBias = known.map((x) => x.median - truth[x.anchor]);
-        const biasRms = known.length >= 2 ? rms(medBias) : NaN;
+        const bs = anchorBiasSpread(medBias, known.map((x) => x.robustSigma), known.map((x) => x.r.length));
+        const biasRms = bs.spread;
         const isRange = target === 'uwb.sigmaTwr';
         const unused = (cfg.uwb.mode === 'tdoa') === isRange;
         const t0 = g.t[0];
@@ -340,9 +365,10 @@ function RangeTab({ loaded, onLoad }: { loaded: Loaded | null; onLoad: (l: Loade
                 <ApplyRow testId="ch9-apply-nlosbias" path="uwb.nlosBiasMean" value={tail.nOut >= 3 ? Number(tail.biasMean.toPrecision(3)) : NaN}
                   label={{ ko: 'NLOS 편향 평균 (문턱을 넘은 양의 평균)', en: 'Mean NLOS bias (mean excess over the threshold)' }} src={fromFile('nlos-fit', '문턱을 넘은 측정들의 (잔차 − 문턱) 평균', 'Mean of (residual − threshold) over the measurements above the threshold')} />
                 <ApplyRow testId="ch9-apply-survey" path="uwb.anchorSurveyError" value={Number.isFinite(biasRms) ? Number(biasRms.toPrecision(3)) : NaN}
-                  label={{ ko: '앵커 좌표 측량 오차의 어림값 (앵커별 편향의 RMS)', en: 'Rough anchor survey error (RMS of the per-anchor biases)' }} src={fromFile('nlos-fit', '(중앙값 − 실제 거리)의 제곱평균제곱근', 'Root mean square of (median − true distance)')}
+                  label={{ ko: '앵커 좌표 측량 오차의 어림값 (앵커별 편향이 앵커마다 다른 정도)', en: 'Rough anchor survey error (how much the per-anchor biases differ between anchors)' }} src={fromFile('nlos-fit', '(중앙값 − 실제 거리)의 앵커 간 표준편차에서 중앙값 추정의 흔들림을 뺀 값', 'Standard deviation across anchors of (median − true distance), with the scatter of the median estimate removed')}
                   note={Number.isFinite(biasRms)
-                    ? tr({ ko: `실제 거리를 넣은 앵커 ${known.length}개로 계산했습니다. 앵커마다 다른 고정 편향은 안테나 지연 보정 오차와 좌표 오차가 섞인 것이라, 이 값은 상한에 가까운 어림입니다.`, en: `Computed from the ${known.length} anchor(s) with a true distance. A fixed bias that differs between anchors mixes antenna-delay calibration error and coordinate error, so this is a rough, upper-end figure.` })
+                    ? <T ko={`실제 거리를 넣은 앵커 ${known.length}개로 계산했습니다. 모든 앵커에 공통인 몫 ${fmt(bs.common * 100, 3)} cm{{der:ch9#nlos-fit|앵커별 편향의 평균|Mean of the per-anchor biases}} 는 좌표 오차가 아니므로(안테나 지연 보정이나 NLOS 가 중앙값을 미는 몫일 수 있음) 뺐습니다. 앵커마다 다른 몫에도 좌표 오차 말고 다른 원인이 섞일 수 있어 거친 어림입니다.`}
+                        en={`Computed from the ${known.length} anchor(s) with a true distance. The part common to all anchors, ${fmt(bs.common * 100, 3)} cm{{der:ch9#nlos-fit|앵커별 편향의 평균|Mean of the per-anchor biases}}, is not a coordinate error (it may be antenna-delay calibration or NLOS pushing the median) and was removed. The part that differs between anchors may still mix in causes other than coordinates, so this is a rough figure.`} />
                     : tr({ ko: '실제 거리를 두 앵커 이상 넣으면 계산합니다.', en: 'Enter the true distance for at least two anchors to compute this.' })} />
               </>
             )}
@@ -368,11 +394,12 @@ function LatencyTab({ loaded, onLoad }: { loaded: Loaded | null; onLoad: (l: Loa
   }, [check]);
   const D = fromFile('latency-fit');
   const G = fromFile('loss-fit');
+  const JS = fromFile('latency-fit', '균등 편도 지연 두 개의 평균(삼각분포)으로 보고 5~95 % 폭에서 환산한 값', 'Converted from the 5–95 % width, treating half the round trip as the mean of two uniform one-way delays (triangular)');
   const pct = (v: number) => `${fmt(v * 100, 3)} %`;
   return (
     <div data-testid="ch9-latency">
       <Loader kind="latency" loaded={loaded} check={check} onLoad={onLoad} samples={[
-        { label: { ko: '샘플 불러오기', en: 'Load sample' }, testId: 'ch9-sample-latency', make: () => ({ name: tr({ ko: '샘플: 왕복 지연 로그 (지금 설정으로 생성)', en: 'Sample: round-trip latency log (generated from the current settings)' }), text: sampleLatencyLog(cfg), sample: true }) },
+        { label: { ko: '샘플 불러오기', en: 'Load sample' }, testId: 'ch9-sample-latency', make: () => ({ name: tr({ ko: '샘플: 왕복 지연 로그 (예시 측정값으로 생성)', en: 'Sample: round-trip latency log (generated from the example measurement)' }), text: sampleLatencyLog(cfg), sample: true }) },
       ]} />
       {res && res.fit.n === 0 && <p><Status kind="bad">{tr({ ko: '쓸 수 있는 왕복 시간이 하나도 없습니다(모든 줄에서 t_recv < t_send). 두 시각을 같은 PC 시계로 찍었는지 확인하세요.', en: 'No usable round-trip time (t_recv < t_send in every row). Check that both stamps come from the same PC clock.' })}</Status></p>}
       {res && res.fit.n > 0 && (() => {
@@ -381,6 +408,7 @@ function LatencyTab({ loaded, onLoad }: { loaded: Loaded | null; onLoad: (l: Loa
         let lo = Math.max(0, quantile(d, 0) - 1), hi = quantile(d, 1) + 1;
         // 설정의 모델이 데이터에서 너무 멀지 않으면 그 범위까지 함께 보여 준다
         if (mu + J <= 2.5 * hi) { lo = Math.max(0, Math.min(lo, mu - J - 1)); hi = Math.max(hi, mu + J + 1); }
+        const jit = jitterFromHalfWidth(fit.jitter);
         const lossVal = { model: 'ge' as const, p: Number(fit.lossRate.toPrecision(3)), pGB: Number(fit.ge.pGB.toPrecision(3)), pBG: Number(fit.ge.pBG.toPrecision(3)), lossGood: 0, lossBad: 1 };
         const nLost = loss.lost.filter(Boolean).length;
         const longest = Math.max(0, ...lossRunLengths(loss.lost));
@@ -388,19 +416,25 @@ function LatencyTab({ loaded, onLoad }: { loaded: Loaded | null; onLoad: (l: Loa
         return (
           <>
             <StatRow>
-              <Stat label={{ ko: '돌아온 핑 / 보낸 핑', en: 'Pings returned / sent' }} value={`${fit.n} / ${fit.sent}`} src={G} />
+              <Stat label={{ ko: '돌아온 핑 / 보낸 핑', en: 'Pings returned / sent' }} value={`${fit.n}\u00a0/\u00a0${fit.sent}`} src={G} />
               <Stat label={{ ko: '편도 지연 평균', en: 'Mean one-way delay' }} value={fit.delayMean * 1000} unit="ms" src={D} />
               <Stat label={{ ko: '중앙값 (p50)', en: 'Median (p50)' }} value={fit.p50 * 1000} unit="ms" src={D} />
               <Stat label={{ ko: 'p95', en: 'p95' }} value={fit.p95 * 1000} unit="ms" src={D} />
               <Stat label={{ ko: 'p99', en: 'p99' }} value={fit.p99 * 1000} unit="ms" src={D} />
-              <Stat label={{ ko: '지터 (5~95 % 폭의 절반)', en: 'Jitter (half the 5–95 % width)' }} value={fit.jitter * 1000} unit="ms" src={D} />
+              <Stat label={{ ko: '5~95 % 폭의 절반 $w$', en: 'Half the 5–95 % width $w$' }} value={fit.jitter * 1000} unit="ms" src={D} />
+              <Stat label={{ ko: '편도 지터 $J = w/0.684$', en: 'One-way jitter $J = w/0.684$' }} value={jit * 1000} unit="ms" src={JS} />
               <Stat label={{ ko: '핑 주기', en: 'Ping rate' }} value={fit.rate} unit="Hz" src={D} />
             </StatRow>
             <div class="grid-2">
               <LineChart
                 title={{ ko: '핑마다의 편도 지연 (왕복의 절반)', en: 'One-way delay of each ping (half the round trip)' }} xLabel={{ ko: '순번 seq', en: 'Sequence number' }} yLabel={{ ko: '편도 지연 [ms]', en: 'One-way delay [ms]' }} height={230}
-                series={[{ name: { ko: '로그 데이터', en: 'Log data' }, x: seq, y: d, slot: 1, dash: '', width: 1.2 }]}
-                refLines={[{ y: fit.p50 * 1000, label: 'p50', slot: 3 }, { y: fit.p95 * 1000, label: 'p95', slot: 2 }]} src={D} testId="ch9-latency-series" />
+                series={[
+                  { name: { ko: '로그 데이터', en: 'Log data' }, x: seq, y: d, slot: 1, dash: '', width: 1.2 },
+                  // p50·p95 는 데이터 띠 한가운데에 글자를 얹지 않고 범례로 이름을 붙인 수평선으로 그린다
+                  { name: 'p50', x: [seq[0], seq[seq.length - 1]], y: [fit.p50 * 1000, fit.p50 * 1000], slot: 3, dash: '6 3', width: 2 },
+                  { name: 'p95', x: [seq[0], seq[seq.length - 1]], y: [fit.p95 * 1000, fit.p95 * 1000], slot: 2, dash: '2 3', width: 2 },
+                ]}
+                src={D} testId="ch9-latency-series" />
               <DataHist
                 title={{ ko: '편도 지연의 분포', en: 'Distribution of the one-way delay' }} xLabel={{ ko: '편도 지연 [ms]', en: 'One-way delay [ms]' }}
                 values={d} bins={32} range={[lo, hi]}
@@ -422,10 +456,11 @@ function LatencyTab({ loaded, onLoad }: { loaded: Loaded | null; onLoad: (l: Loa
             {longest > l999 && <p><Status kind="warn">{tr({ ko: '로그의 가장 긴 연속 손실이 맞춘 모델의 1000번에 1번 값보다 깁니다. 이 단순한 모델은 긴 공백을 과소평가하고 있으니, 통신 공백은 로그의 최댓값을 기준으로 따로 확인하세요.', en: 'The longest burst in the log exceeds the 1-in-1000 value of the fitted model. This simple model underestimates long gaps; check the communication gap against the maximum in the log.' })}</Status></p>}
             <h4 style={{ margin: '14px 0 6px' }}>{tr({ ko: '설정에 반영할 값', en: 'Values for the settings' })}</h4>
             <ApplyRow testId="ch9-apply-delay" path="comm.delayMean" value={Number(fit.delayMean.toPrecision(4))} label={{ ko: '통신 지연 (편도, 평균)', en: 'Comm delay (one-way, mean)' }} src={D} />
-            <ApplyRow testId="ch9-apply-jitter" path="comm.delayJitter" value={Number(fit.jitter.toPrecision(3))} label={{ ko: '통신 지연 지터 (±)', en: 'Comm delay jitter (±)' }} src={D} />
+            <ApplyRow testId="ch9-apply-jitter" path="comm.delayJitter" value={Number(jit.toPrecision(3))} label={{ ko: '통신 지연 지터 (±, 편도 균등 모델의 반폭 $J$)', en: 'Comm delay jitter (±, half-width $J$ of the uniform one-way model)' }} src={JS} />
             <ApplyRow testId="ch9-apply-loss" path="comm.loss" value={lossVal} label={{ ko: '손실 모델 (2상태: 받음 ↔ 빠짐)', en: 'Loss model (two states: ok ↔ lost)' }} src={G}
               show={(v) => (v.model === 'ge' ? `p_GB ${pct(v.pGB)}, p_BG ${pct(v.pBG)}, h_G ${pct(v.lossGood)}, h_B ${pct(v.lossBad)}` : v.model === 'bernoulli' ? `Bernoulli p ${pct(v.p)}` : tr({ ko: '손실 없음', en: 'no loss' }))}
-              note={tr({ ko: '로그에서는 "빠졌다/받았다"만 보이므로 Good 상태는 손실 0 %, Bad 상태는 손실 100 % 인 모델로 넣습니다. 핑 주기는 반영하지 않습니다 — 방송 주기는 여러분이 정하는 설계값이기 때문입니다.', en: 'A log only shows "lost" or "received", so the model is entered with 0 % loss in Good and 100 % in Bad. The ping rate is not applied — the broadcast rate is a design value you choose.' })} />
+              note={<T ko={`로그에서는 "빠졌다/받았다"만 보이므로, 반영하면 Good 상태 손실률 $h_G$ 는 0 %, Bad 상태 손실률 $h_B$ 는 100 % 로 함께 바뀝니다(지금 설정은 $h_G$ = {{cfg:comm.loss.lossGood}}, $h_B$ = {{cfg:comm.loss.lossBad}}). 그래서 샘플에서 손실률은 설정값 ${fmt(stationaryLossRate(cfg.comm.loss) * 100, 3)} %{{der:ch7#ge-stationary}} 근처로 돌아오지만, $p_{GB}$ 와 $p_{BG}$ 는 설정값으로 돌아오지 않습니다(설정의 $h_G$, $h_B$ 가 0 %, 100 % 가 아니기 때문). 핑 주기는 반영하지 않습니다 — 방송 주기는 여러분이 정하는 설계값이기 때문입니다.`}
+                en={`A log only shows "lost" or "received", so applying also sets the Good-state loss $h_G$ to 0 % and the Bad-state loss $h_B$ to 100 % (currently $h_G$ = {{cfg:comm.loss.lossGood}}, $h_B$ = {{cfg:comm.loss.lossBad}}). On the sample the loss rate therefore comes back near the setting, ${fmt(stationaryLossRate(cfg.comm.loss) * 100, 3)} %{{der:ch7#ge-stationary}}, but $p_{GB}$ and $p_{BG}$ do not (because the setting's $h_G$, $h_B$ are not 0 % and 100 %). The ping rate is not applied — the broadcast rate is a design value you choose.`} />} />
           </>
         );
       })()}
@@ -450,7 +485,7 @@ export function LogDemo() {
       <div style={{ display: tab === 'latency' ? 'block' : 'none' }}><LatencyTab loaded={store.latency} onLoad={set('latency')} /></div>
       <p class="small" style={{ marginTop: '12px' }}>
         {tr({ ko: '지금 권장 최소 수평 간격', en: 'Recommended minimum horizontal spacing now' })}: <b class="num">{fix(b.minSepH, 3)} m</b>
-        <SrcBadge src={der('ch9#sensitivity', { ko: '지금 전역 설정으로 계산한 오차 예산의 합계(8장의 식)', en: 'Total of the error budget with the current global settings (formula of chapter 8)' })} />
+        <SrcBadge src={der('ch8#budget-sum', { ko: '지금 전역 설정으로 계산한 오차 예산의 합계(8장의 식)', en: 'Total of the error budget with the current global settings (formula of chapter 8)' })} />
         {' · '}<a href="#/report">{tr({ ko: '우리 시스템 리포트 보기', en: 'Open our system report' })}</a>
       </p>
       <p class="small muted">{tr({ ko: '반영한 값의 배지는 회색(예시값)에서 "유도"(내 로그에서 계산한 값)로 바뀝니다. 그 값을 손으로 다시 고치면 예시값으로 돌아갑니다. 교재는 여러분의 측정 자체를 검증할 수는 없으므로, 측정한 날짜, 장소, 조건은 따로 기록해 두세요.', en: 'The badge of an applied value changes from grey (example) to "Derived" (computed from your log). If you edit the value by hand again it goes back to an example value. The textbook cannot verify the measurement itself, so keep your own record of the date, place and conditions.' })}</p>

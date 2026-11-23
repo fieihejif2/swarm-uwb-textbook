@@ -8,30 +8,40 @@ import { Rng } from '../../sim/rng';
 import { ellipsoidDistance } from '../../sim/safety';
 import { normCdf, normPdf } from '../../sim/stats';
 import { der, ex, lit } from '../../sources';
-import { Button, Caption, Histogram, P, Pitfall, Slider, Stat, StatRow, Status, seriesColor } from '../../ui';
+import { Button, Caption, Histogram, P, Pitfall, Slider, Stat, StatRow, Status, seriesColor, useWidth } from '../../ui';
 
-/** 옆에서 본 모습(x–z): 5대를 위아래로 쌓고 예산 타원(수평 반축 a, 수직 반축 c)을 씌운다 */
+/** 옆에서 본 모습(x–z): 5대를 위아래로 쌓고 예산 타원(수평 반축 a, 수직 반축 c)을 씌운다.
+ * 칸 폭에 맞춰 그리고, 제목은 그림 위 여백에, 축척은 오른쪽 안쪽에 둔다(타원과 겹치거나 잘리지 않게). 겹침 여부는 그림 밖 Status 로 알린다. */
 function StackPicture({ s, a, c, body, kz, ok }: { s: number; a: number; c: number; body: number; kz: number; ok: boolean }) {
+  const [ref, width] = useWidth<HTMLDivElement>();
   const pts = formationOffsets('stack', s, 5);
   const span = 4 * s + 2 * c + 0.3;
-  const H = 300, W = 260, k = Math.min((H - 16) / span, (W - 90) / (2 * a + 0.2));
-  const cx = 96, sz = (z: number) => H / 2 - z * k;
+  const W = Math.max(240, Math.min(width || 260, 520)), H = 320, top = 26, bot = 8, right = 64;
+  const cx = (W - right) / 2;
+  const k = Math.min((H - top - bot) / span, (cx - 26) / (a + 0.1));
+  const sz = (z: number) => top + (H - top - bot) / 2 - z * k;
+  const txt = { fill: 'var(--text-2)', fontSize: '11px' };
   return (
-    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} role="img" style={{ maxWidth: '100%', height: 'auto', background: 'var(--surface-2)', borderRadius: '8px' }}
-      aria-label={tr({ ko: `위아래로 쌓은 5대를 옆에서 본 그림. 수직 간격 ${fmt(s, 3)} m, 예산 타원의 높이 ${fmt(2 * c, 3)} m. ${ok ? '타원이 겹치지 않음' : '타원이 겹침'}`, en: `Side view of five stacked drones. Vertical spacing ${fmt(s, 3)} m, height of the budget ellipse ${fmt(2 * c, 3)} m. ${ok ? 'No overlap' : 'Ellipses overlap'}` })}>
-      {pts.map((p, i) => (
-        <g key={i}>
-          <ellipse cx={cx} cy={sz(p[2])} rx={a * k} ry={c * k} fill={ok ? seriesColor(1) : 'var(--critical)'} fill-opacity="0.13" stroke={ok ? seriesColor(1) : 'var(--critical)'} stroke-width="1.5" />
-          <ellipse cx={cx} cy={sz(p[2])} rx={(body / 2) * k} ry={((body * kz) / 2) * k} fill="none" stroke="var(--text-2)" stroke-width="1" stroke-dasharray="3 3" />
-          <rect x={cx - (body / 2) * k} y={sz(p[2]) - 2.5} width={body * k} height="5" rx="2" fill="var(--text)" />
-          <text class="tick" x={cx + a * k + 8} y={sz(p[2]) + 4}>{i + 1}</text>
-        </g>
-      ))}
-      <line x1={W - 40} x2={W - 40} y1={sz(pts[0][2])} y2={sz(pts[1][2])} stroke="var(--text-2)" stroke-width="1.5" />
-      <text class="tick" x={W - 34} y={(sz(pts[0][2]) + sz(pts[1][2])) / 2 + 4}>{fmt(s, 3)} m</text>
-      <text class="tick" x="8" y="14">{tr({ ko: '옆에서 본 모습 (x–z)', en: 'Side view (x–z)' })}</text>
-      {!ok && <text class="ref-label" x="8" y={H - 8} fill="var(--critical-text)">{tr({ ko: '✕ 타원이 겹침', en: '✕ ellipses overlap' })}</text>}
-    </svg>
+    <div ref={ref} class="plot" style={{ maxWidth: '520px' }}>
+      {width > 0 && (
+        <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} role="img" style={{ background: 'var(--surface-2)', borderRadius: '8px' }}
+          aria-label={tr({ ko: `위아래로 쌓은 5대를 옆에서 본 그림. 수직 간격 ${fmt(s, 3)} m, 예산 타원의 높이 ${fmt(2 * c, 3)} m. ${ok ? '타원이 겹치지 않음' : '타원이 겹침'}`, en: `Side view of five stacked drones. Vertical spacing ${fmt(s, 3)} m, height of the budget ellipse ${fmt(2 * c, 3)} m. ${ok ? 'No overlap' : 'Ellipses overlap'}` })}>
+          <text x="8" y="17" style={{ ...txt, fill: 'var(--text)', fontWeight: 650 }}>{tr({ ko: '옆에서 본 모습 (x–z)', en: 'Side view (x–z)' })}</text>
+          {pts.map((p, i) => (
+            <g key={i}>
+              <ellipse cx={cx} cy={sz(p[2])} rx={a * k} ry={c * k} fill={ok ? seriesColor(1) : 'var(--critical)'} fill-opacity="0.13" stroke={ok ? seriesColor(1) : 'var(--critical)'} stroke-width="1.5" />
+              <ellipse cx={cx} cy={sz(p[2])} rx={(body / 2) * k} ry={((body * kz) / 2) * k} fill="none" stroke="var(--text-2)" stroke-width="1" stroke-dasharray="3 3" />
+              <rect x={cx - (body / 2) * k} y={sz(p[2]) - 2.5} width={body * k} height="5" rx="2" fill="var(--text)" />
+              <text x={cx + a * k + 8} y={sz(p[2]) + 4} style={{ ...txt, fill: 'var(--text)', fontWeight: 700, fontSize: '12px' }}>{i + 1}</text>
+            </g>
+          ))}
+          <line x1={W - 14} x2={W - 14} y1={sz(pts[0][2])} y2={sz(pts[1][2])} stroke="var(--text-2)" stroke-width="1.5" />
+          <line x1={W - 18} x2={W - 10} y1={sz(pts[0][2])} y2={sz(pts[0][2])} stroke="var(--text-2)" stroke-width="1.5" />
+          <line x1={W - 18} x2={W - 10} y1={sz(pts[1][2])} y2={sz(pts[1][2])} stroke="var(--text-2)" stroke-width="1.5" />
+          <text x={W - 20} y={(sz(pts[0][2]) + sz(pts[1][2])) / 2 + 4} text-anchor="end" style={txt}>{fmt(s, 3)} m</text>
+        </svg>
+      )}
+    </div>
   );
 }
 
@@ -54,7 +64,7 @@ export function StackPitfall() {
       <div class="grid-2">
         <StackPicture s={s} a={b.minSepH / 2} c={b.minSepV / 2} body={body} kz={kz} ok={ok} />
         <div>
-          <Slider label={{ ko: '수직 간격 $s$', en: 'Vertical spacing $s$' }} value={s} min={0.2} max={3} step={0.05} unit="m" onChange={setS} src={ex('formation.spacing', { ko: '이 실험에서만 바꾸는 값. 처음 값은 수평 권장 간격(5 cm 단위로 올림)입니다.', en: 'Local to this experiment; starts at the recommended horizontal spacing (rounded up to 5 cm).' })} testId="ch8-stack-s" />
+          <Slider label={{ ko: '수직 간격 $s$', en: 'Vertical spacing $s$' }} value={s} min={0.2} max={3} step={0.05} unit="m" onChange={setS} src={ex(undefined, { ko: '이 실험에서만 바꾸는 값. 처음 값은 수평 권장 간격(5 cm 단위로 올림)입니다.', en: 'Local to this experiment; starts at the recommended horizontal spacing (rounded up to 5 cm).' })} testId="ch8-stack-s" />
           <Slider label={{ ko: '다운워시 비율 $k_z$', en: 'Downwash ratio $k_z$' }} value={kz} min={1} max={6} step={0.1} onChange={setKz} src={ex('safety.downwashRatio', { ko: '이 실험에서만 바꾸는 값. 처음 값은 전역 설정입니다.', en: 'Local to this experiment; starts from the global setting.' })} testId="ch8-stack-kz" />
           <div class="btn-row" style={{ margin: '6px 0 10px' }}>
             <Button onClick={() => setS(round5(b.minSepH))} testId="ch8-stack-reset">{tr({ ko: '수평 권장값으로', en: 'Use the horizontal value' })}</Button>
@@ -75,7 +85,7 @@ export function StackPitfall() {
           </p>
         </div>
       </div>
-      <Caption>{tr({
+      <Caption src={GEO}>{tr({
         ko: '색이 칠해진 타원은 예산 타원체의 단면, 그 안의 점선 타원은 오차를 빼고 기체와 다운워시만 본 영역입니다. k_z 를 키우면 점선 타원과 색 타원이 함께 길어집니다. 수직 간격을 권장 수직 간격까지 올리면 타원들이 서로 닿기만 하고 겹치지 않습니다.',
         en: 'The filled ellipse is a section of the budget ellipsoid; the dashed ellipse inside it is the zone of body and downwash alone, without errors. Raising k_z lengthens both. Raise the vertical spacing to the recommended vertical value and the ellipses just touch without overlapping.',
       })}</Caption>
@@ -108,25 +118,25 @@ export function SigmaPitfall() {
       <P ko="'측위 오차는 몇 cm' 라고 말할 때 그 숫자는 대개 **1σ**, 즉 평소 크기입니다. 그 숫자를 그대로 더해 간격을 정하면($k_\sigma = 1$) 간격은 좁아져서 보기 좋지만, 두 기체가 계획보다 가까워지는 일이 얼마나 자주 생기는지 아래에서 확인해 보세요. 가로축의 양수는 '두 기체가 무작위 오차 때문에 계획보다 이만큼 가까워졌다'는 뜻입니다."
         en="When people say 'positioning error is a few cm', that number is usually **1σ**, the typical size. Add it as it is to set the spacing ($k_\sigma = 1$) and the spacing looks pleasantly small — but check below how often the two vehicles end up closer than planned. Positive values on the horizontal axis mean 'random error brought the two vehicles this much closer than planned'." />
       <div class="controls">
-        <Slider label={{ ko: '신뢰 배수 $k_\\sigma$', en: 'Confidence multiplier $k_\\sigma$' }} value={k} min={1} max={4} step={0.5} unit="σ" onChange={setK} src={ex('safety.kSigma', { ko: '이 실험에서만 바꾸는 값. 전역 설정은 그대로입니다.', en: 'Local to this experiment; the global setting is untouched.' })} testId="ch8-sigma-k" />
-        <Slider label={{ ko: '한 번의 비행에서 오차가 새로 뽑히는 횟수', en: 'Independent draws of the error in one flight' }} value={looks} min={10} max={2000} step={10} onChange={setLooks} src={ex(undefined, { ko: '가정. 실제 오차는 시간적으로 이어져 있으므로 "비행시간 ÷ 오차가 바뀌는 데 걸리는 시간"쯤으로 어림합니다. 처음 값은 1초에 한 번, 10분 비행을 가정한 것입니다.', en: 'An assumption. Real errors are correlated in time, so estimate it as flight time ÷ the time it takes the error to change. The initial value assumes one draw per second over a 10-minute flight.' })} testId="ch8-sigma-looks" />
+        <Slider label={{ ko: '신뢰 배수 $k_\\sigma$', en: 'Confidence multiplier $k_\\sigma$' }} value={k} min={1} max={4} step={0.5} unit="σ" onChange={setK} src={ex(undefined, { ko: '이 실험에서만 바꾸는 값. 처음 값 1 은 흔히 하는 실수를 재현하려고 고른 것이고, 전역 설정은 그대로입니다.', en: 'Local to this experiment. The initial 1 reproduces the common mistake; the global setting is untouched.' })} testId="ch8-sigma-k" />
+        <Slider label={{ ko: '한 번의 비행에서 오차가 새로 뽑히는 횟수 (처음 값 600 = 10분 × 1초에 1번)', en: 'Independent draws of the error in one flight (initial 600 = 10 min × once per second)' }} value={looks} min={10} max={2000} step={10} onChange={setLooks} src={ex(undefined, { ko: '가정. 실제 오차는 시간적으로 이어져 있으므로 "비행시간 ÷ 오차가 서로 무관해지는 데 걸리는 시간"쯤으로 어림합니다. 처음 값은 그 시간을 약 1초로 보고(가정, 9장에서 로그로 확인), 10분 비행에 1초마다 한 번씩 새 오차가 뽑힌다고 본 것입니다.', en: 'An assumption. Real errors are correlated in time, so estimate it as flight time ÷ the time it takes the error to become unrelated to itself. The initial value takes that time to be about 1 s (an assumption, to be checked against logs in ch. 9): one fresh draw per second over a 10-minute flight.' })} testId="ch8-sigma-looks" />
       </div>
       <Histogram
         title={{ ko: '두 기체 사이 거리의 무작위 오차 (가까워지는 쪽이 +)', en: 'Random error of the distance between two drones (+ = closer)' }}
         values={samples} bins={41} range={[-4.5 * sigRel * 100, 4.5 * sigRel * 100]}
         xLabel={{ ko: '계획보다 가까워진 거리 [cm]', en: 'Closer than planned by [cm]' }} slot={1} src={SRC} testId="ch8-sigma-hist"
         theory={{ name: { ko: '이론: N(0, 2σ²)', en: 'Theory: N(0, 2σ²)' }, pdf: (x) => normPdf(x, 0, sigRel * 100) }}
-        refLines={[{ x: allow * 100, label: { ko: `예산에 잡아 둔 몫 ${fmt(allow * 100, 3)} cm`, en: `Allowance in the budget: ${fmt(allow * 100, 3)} cm` }, slot: 8 }]} />
+        refLines={[{ x: allow * 100, label: { ko: `예산 몫 ${fmt(allow * 100, 3)} cm`, en: `Allowance ${fmt(allow * 100, 3)} cm` }, slot: 8 }]} />
       <StatRow>
         <Stat label={{ ko: '몫을 넘는 비율 (시뮬레이션)', en: 'Fraction beyond the allowance (simulation)' }} value={pSim * 100} unit="%" src={SRC} status={pSim > 0.01 ? 'bad' : pSim > 0.002 ? 'warn' : 'good'} />
-        <Stat label={{ ko: '같은 비율 (이론 $1 - \\Phi(k_\\sigma)$)', en: 'Same fraction (theory $1 - \\Phi(k_\\sigma)$)' }} value={pTheory * 100} unit="%" src={der('ch8#rss', { ko: '표준정규분포의 한쪽 꼬리 확률', en: 'One-sided tail probability of the standard normal' })} />
+        <Stat label={{ ko: '같은 비율, 이론: $1 - \\Phi(k_\\sigma)$', en: 'Same fraction, theory: $1 - \\Phi(k_\\sigma)$' }} value={pTheory * 100} unit="%" src={der('ch8#rss', { ko: '표준정규분포의 한쪽 꼬리 확률', en: 'One-sided tail probability of the standard normal' })} />
         <Stat label={{ ko: '한 비행에서 한 번이라도 넘을 확률', en: 'Chance of exceeding it at least once per flight' }} value={pFlight * 100} unit="%" src={der('ch8#rss', { ko: '1 − (1 − p)^N, N 은 위 슬라이더의 횟수', en: '1 − (1 − p)^N with N from the slider above' })} status={pFlight > 0.5 ? 'bad' : pFlight > 0.05 ? 'warn' : 'good'} />
-        <Stat label={{ ko: '이 $k_\\sigma$ 로 계산한 권장 수평 간격', en: 'Min. horizontal spacing with this $k_\\sigma$' }} value={b1.minSepH} unit="m" src={der('ch8#budget-sum')} />
+        <Stat label={{ ko: '권장 수평 간격 (이 $k_\\sigma$ 로)', en: 'Min. horizontal spacing with this $k_\\sigma$' }} value={b1.minSepH} unit="m" src={der('ch8#budget-sum')} />
         <Stat label={{ ko: '$k_\\sigma = 3$ 일 때', en: 'With $k_\\sigma = 3$' }} value={b3.minSepH} unit="m" src={der('ch8#budget-sum')} />
       </StatRow>
       <P ko="$k_\sigma = 1$ 이면 여섯 번에 한 번꼴로 몫을 넘습니다. 한 비행 전체로 보면 사실상 반드시 넘습니다. 0장의 몬테카를로에서 '평균은 멀쩡한데 꼬리가 선을 넘는 비행'을 본 것과 같은 이야기입니다. $k_\sigma$ 를 3 으로 올려도 긴 비행에서는 넘는 순간이 생길 수 있다는 점도 슬라이더로 확인하세요. 그래서 예산은 무작위 몫 말고도 확정 항을 **최악값으로** 잡고 여유 $d_{\text{margin}}$ 을 따로 둡니다. $k_\sigma$ 는 보장이 아니라 **약속**입니다."
         en="With $k_\sigma = 1$ the allowance is exceeded about one time in six; over a whole flight it is exceeded practically for certain. It is the same story as the Monte Carlo of chapter 0, where the mean looked fine while flights in the tail crossed the line. Use the slider to see that even $k_\sigma = 3$ can be exceeded at some moment of a long flight. That is why the budget also takes the deterministic terms **at their worst** and keeps a separate margin $d_{\text{margin}}$. $k_\sigma$ is a **convention**, not a guarantee." />
-      <Caption src={lit('cfbl-datasheet', 'flight-time')}>{tr({ ko: '10분은 Crazyflie 2.1 Brushless 의 기본 배터리 비행시간입니다.', en: 'Ten minutes is the flight time of the Crazyflie 2.1 Brushless with its stock battery.' })}</Caption>
+      <Caption src={lit('cfbl-datasheet', 'flight-time')}>{tr({ ko: '위 슬라이더 처음 값의 10분은 Crazyflie 2.1 Brushless 의 기본 배터리 비행시간입니다(600 = 10분 × 1초에 1번).', en: 'The 10 minutes behind the slider’s initial value is the flight time of the Crazyflie 2.1 Brushless with its stock battery (600 = 10 min × once per second).' })}</Caption>
     </Pitfall>
   );
 }

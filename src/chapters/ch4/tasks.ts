@@ -7,12 +7,12 @@ export const gatedUpdateTask: CodingTask = {
   prompt: {
     ko: '스칼라 측정 하나로 필터를 갱신하되, 마할라노비스 게이트를 통과한 측정만 받아들이는 함수 **`gated_update(x, P, z, h, H, R, k)`** 를 완성하세요.\n\n'
       + '**입력** — `x`: 상태 추정값, 길이 n 인 1차원 배열(위치는 m, 속도는 m/s). `P`: 그 공분산, n×n 대칭행렬. `z`: 측정값(스칼라, m). `h`: 지금 추정값으로 예측한 측정값 $h(\\hat x)$ (스칼라, m. 이미 계산해서 줍니다). `H`: 측정 야코비안, 길이 n 인 1차원 배열. `R`: 측정 잡음 분산(스칼라, m²). `k`: 게이트 문턱(σ 단위). **`k = 0` 은 게이트를 끈다는 뜻이며 항상 갱신합니다.** `x`, `P`, `H` 는 리스트로 들어올 수도 있습니다.\n\n'
-      + '**계산** — 혁신 $\\nu = z - h$, 혁신 분산 $S = H P H^{\\mathsf{T}} + R$ (스칼라). $\\nu^2/S > k^2$ 이면 **버립니다**. 정확히 $\\nu^2/S = k^2$ 이면 **통과**입니다. 통과하면 $K = P H^{\\mathsf{T}} / S$ (길이 n), $x^{+} = x + K\\nu$, $P^{+} = (I - K H)\\,P$.\n\n'
-      + '**반환** — `(x_new, P_new, accepted)`. `x_new` 는 길이 n, `P_new` 는 n×n, `accepted` 는 `True`/`False`. 버린 경우 `x_new`, `P_new` 는 입력과 **같은 값**이어야 합니다. 입력 배열을 그 자리에서 고치지 말고(`x += …` 금지) 새 배열을 돌려주세요.',
+      + '**계산** — 혁신 $\\nu = z - h$, 혁신 분산 $S = H P H^{\\mathsf{T}} + R$ (스칼라). $\\nu^2/S > k^2$ 이면 **버립니다**. 정확히 $\\nu^2/S = k^2$ 이면 **통과**입니다. 통과하면 $K = P H^{\\mathsf{T}} / S$ (길이 n), $x^{+} = x + K\\nu$, $P^{+} = (I - K H)\\,P$. 여기서 $K H$ 는 **열벡터 × 행벡터로 만든 n×n 행렬**입니다. `K`, `H` 가 둘 다 1차원 배열이므로 `K @ H`(스칼라가 됨)나 `K * H`(성분끼리 곱)가 아니라 `np.outer(K, H)` 로 만드세요. 오류 없이 틀린 값이 나오는 흔한 실수입니다.\n\n'
+      + '**반환** — `(x_new, P_new, accepted)`. `x_new` 는 길이 n, `P_new` 는 n×n, `accepted` 는 `True`/`False`. `x_new`, `P_new` 는 numpy 배열이면 됩니다(채점은 값만 비교하며, 허용 오차는 상대 1e-6, 절대 1e-9). 버린 경우 `x_new`, `P_new` 는 입력과 **같은 값**이어야 합니다. 입력 배열을 그 자리에서 고치지 말고(`x += …` 금지) 새 배열을 돌려주세요.',
     en: 'Complete **`gated_update(x, P, z, h, H, R, k)`**: update a filter with one scalar measurement, but only if the measurement passes a Mahalanobis gate.\n\n'
       + '**Inputs** — `x`: state estimate, 1-D array of length n (positions in m, velocities in m/s). `P`: its covariance, n×n symmetric. `z`: the measurement (scalar, m). `h`: the measurement predicted from the current estimate, $h(\\hat x)$ (scalar, m; already computed for you). `H`: measurement Jacobian, 1-D array of length n. `R`: measurement noise variance (scalar, m²). `k`: gate threshold in σ. **`k = 0` means the gate is off: always update.** `x`, `P`, `H` may be plain lists.\n\n'
-      + '**Computation** — innovation $\\nu = z - h$, innovation variance $S = H P H^{\\mathsf{T}} + R$ (scalar). If $\\nu^2/S > k^2$, **reject**. Exactly $\\nu^2/S = k^2$ **passes**. If it passes: $K = P H^{\\mathsf{T}} / S$ (length n), $x^{+} = x + K\\nu$, $P^{+} = (I - K H)\\,P$.\n\n'
-      + '**Return** — `(x_new, P_new, accepted)`. `x_new` has length n, `P_new` is n×n, `accepted` is `True`/`False`. When rejected, `x_new` and `P_new` must **equal the inputs**. Do not modify the input arrays in place (no `x += …`); return new arrays.',
+      + '**Computation** — innovation $\\nu = z - h$, innovation variance $S = H P H^{\\mathsf{T}} + R$ (scalar). If $\\nu^2/S > k^2$, **reject**. Exactly $\\nu^2/S = k^2$ **passes**. If it passes: $K = P H^{\\mathsf{T}} / S$ (length n), $x^{+} = x + K\\nu$, $P^{+} = (I - K H)\\,P$. Here $K H$ is the **n×n matrix of a column vector times a row vector**. Since `K` and `H` are both 1-D arrays, build it with `np.outer(K, H)`, not `K @ H` (a scalar) or `K * H` (element-wise): a common mistake that gives wrong numbers without any error.\n\n'
+      + '**Return** — `(x_new, P_new, accepted)`. `x_new` has length n, `P_new` is n×n, `accepted` is `True`/`False`. `x_new` and `P_new` may be numpy arrays (only the values are compared, with tolerance rel 1e-6, abs 1e-9). When rejected, `x_new` and `P_new` must **equal the inputs**. Do not modify the input arrays in place (no `x += …`); return new arrays.',
   },
   starter: `import numpy as np
 
@@ -24,6 +24,7 @@ def gated_update(x, P, z, h, H, R, k):
     # 2) 혁신 분산 S = H P H^T + R   (스칼라. H @ P @ H 를 쓰면 됩니다)
     # 3) 게이트: k > 0 이고 nu^2 / S > k^2 이면 버린다 → (x.copy(), P.copy(), False)
     # 4) 통과하면 K = P H^T / S,  x_new = x + K nu,  P_new = (I - K H) P
+    #    K H 는 n×n 행렬: np.outer(K, H)   (K @ H 는 스칼라, K * H 는 성분곱이라 틀림)
     x_new = x.copy()
     P_new = P.copy()
     accepted = True

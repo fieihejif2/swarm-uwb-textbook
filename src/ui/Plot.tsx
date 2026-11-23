@@ -26,6 +26,8 @@ export interface Series {
   points?: boolean;
   /** 흐리게(배경용 계열) */
   faint?: boolean;
+  /** false 이면 범례에 넣지 않는다(예: ±2σ 의 아래쪽 선처럼 같은 뜻의 두 번째 선) */
+  legend?: boolean;
 }
 export interface RefLine {
   x?: number;
@@ -85,9 +87,13 @@ function logTicks(lo: number, hi: number): number[] {
   const out: number[] = [];
   const a = Math.floor(Math.log10(lo)), b = Math.ceil(Math.log10(hi));
   const stride = Math.max(1, Math.ceil((b - a) / 6));
-  for (let e = a; e <= b; e += stride) out.push(Math.pow(10, e));
+  // 범위가 좁으면(3자릿수 이하) 1-2-5 눈금을 함께 넣어 읽기 쉽게 한다
+  const mults = b - a <= 3 ? [1, 2, 5] : [1];
+  for (let e = a; e <= b; e += stride) for (const m of mults) out.push(m * Math.pow(10, e));
   return out.filter((v) => v >= lo * 0.999 && v <= hi * 1.001);
 }
+/** 축 라벨의 대괄호 안 단위('시간 [s]' → 's'). 툴팁 값 뒤에 붙인다. */
+const unitOf = (label: L | string): string => { const m = tr(label).match(/\[([^\]]+)\]\s*$/); return m ? m[1] : ''; };
 const tickFmt = (v: number, log?: boolean): string => {
   if (log) { const e = Math.round(Math.log10(v)); return e >= -2 && e <= 3 ? String(Number(v.toPrecision(1))) : `10^${e}`.replace('-', '−'); }
   return fmt(v, 4);
@@ -151,10 +157,11 @@ function nearestIndex(x: ArrayLike<number>, v: number): number {
 
 function Legend({ series }: { series: Series[] }) {
   const active = useLink();
-  if (series.length < 2) return null;
+  if (series.filter((s) => s.legend !== false).length < 2) return null;
   return (
     <div class="legend">
       {series.map((s, i) => {
+        if (s.legend === false) return null;
         const slot = s.slot ?? i + 1;
         return (
           <span key={i} class={`item${s.link && active.value === s.link ? ' is-active' : ''}`} {...linkHandlers(active, s.link)} tabIndex={s.link ? 0 : undefined}>
@@ -216,7 +223,7 @@ export function LineChart(p: LineChartProps) {
     e.preventDefault();
     const n = base.x.length;
     const cur = hover === null ? 0 : nearestIndex(base.x, hover);
-    const stepN = Math.max(1, Math.round(n / 60));
+    const stepN = Math.max(1, Math.round(n / (e.shiftKey ? 8 : 60)));
     setHover(base.x[Math.min(n - 1, Math.max(0, cur + (e.key === 'ArrowRight' ? stepN : -stepN)))]);
   };
   const tipRows = hover === null ? [] : p.series.map((s, i) => {
@@ -231,7 +238,7 @@ export function LineChart(p: LineChartProps) {
       <Legend series={p.series} />
       {width > 0 && (
         <svg
-          width={W} height={height} viewBox={`0 0 ${W} ${height}`} role="img" tabIndex={0}
+          width={W} height={height} viewBox={`0 0 ${W} ${height}`} role="img" {...({ tabindex: '0' } as any)}
           aria-label={`${p.title ? tr(p.title) + '. ' : ''}${tr(p.xLabel)} — ${tr(p.yLabel)}. ${tr({ ko: '좌우 방향키로 값을 읽을 수 있습니다.', en: 'Use left/right arrow keys to read values.' })}`}
           onPointerMove={onMove} onPointerLeave={() => setHover(null)} onKeyDown={onKey} onBlur={() => setHover(null)}
         >
@@ -286,9 +293,9 @@ export function LineChart(p: LineChartProps) {
         <div class="plot-tip" style={{ left: `${Math.min(Math.max(tipX + 10, 4), W - 170)}px`, top: `${m.t + 4}px` }}>
           <div class="t">{tr(p.xLabel)}: {fmt(tipRows[0].x, digits)}</div>
           {tipRows.map((r) => (
-            <div key={r.i}>
+            <div key={r.i} class="tip-row">
               <svg width="16" height="8" aria-hidden="true" style={{ marginRight: '4px' }}><line x1="0" y1="4" x2="16" y2="4" stroke={seriesColor(r.s.slot ?? r.i + 1)} stroke-width="2" stroke-dasharray={r.s.dash ?? seriesDash(r.s.slot ?? r.i + 1)} /></svg>
-              <b>{fmt(r.y, digits)}</b> <span class="t">{tr(r.s.name)}</span>
+              <b>{fmt(r.y, digits)}{unitOf(p.yLabel) ? ` ${unitOf(p.yLabel)}` : ''}</b> <span class="t">{tr(r.s.name)}</span>
             </div>
           ))}
         </div>
@@ -304,7 +311,7 @@ export function LineChart(p: LineChartProps) {
                 return (
                   <tr key={r}>
                     <td class="r">{fmt(base.x[k], digits)}</td>
-                    {p.series.map((s, i) => { const j = nearestIndex(s.x, base.x[k]); return <td key={i} class="r">{j >= 0 ? fmt(s.y[j], digits) : '–'}</td>; })}
+                    {p.series.map((s, i) => { const j = nearestIndex(s.x, base.x[k]); const tol = 1e-6 * Math.max(1, Math.abs(xd[1] - xd[0])); return <td key={i} class="r">{j >= 0 && Math.abs(s.x[j] - base.x[k]) <= tol ? fmt(s.y[j], digits) : '—'}</td>; })}
                   </tr>
                 );
               })}
@@ -367,7 +374,7 @@ export function Histogram(p: HistogramProps) {
         </div>
       )}
       {width > 0 && (
-        <svg width={W} height={height} viewBox={`0 0 ${W} ${height}`} role="img" tabIndex={0} onKeyDown={onKey} onBlur={() => setHover(null)} onPointerLeave={() => setHover(null)}
+        <svg width={W} height={height} viewBox={`0 0 ${W} ${height}`} role="img" {...({ tabindex: '0' } as any)} onKeyDown={onKey} onBlur={() => setHover(null)} onPointerLeave={() => setHover(null)}
           aria-label={`${p.title ? tr(p.title) + '. ' : ''}${tr({ ko: '히스토그램', en: 'Histogram' })}: ${tr(p.xLabel)}. n = ${h.n}`}>
           {yt.map((v) => <line key={`g${v}`} class="grid" x1={m.l} x2={m.l + iw} y1={sy(v)} y2={sy(v)} />)}
           {yt.map((v) => <text key={`ty${v}`} class="tick" x={m.l - 6} y={sy(v) + 4} text-anchor="end">{tickFmt(v)}</text>)}

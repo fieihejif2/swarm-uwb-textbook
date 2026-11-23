@@ -9,23 +9,24 @@ export const kfDelayedTask: CodingTask = {
       + '**`predict(x, P, dt, sigma_a)`** → `(x_pred, P_pred)`. 등속 모델로 한 스텝 예측합니다. $F = \\begin{bmatrix}1 & dt\\\\ 0 & 1\\end{bmatrix}$, $Q = \\sigma_a^2\\begin{bmatrix}dt^4/4 & dt^3/2\\\\ dt^3/2 & dt^2\\end{bmatrix}$ 이고 $x^- = Fx$, $P^- = FPF^{\\mathsf T} + Q$ 입니다. `sigma_a` 는 가속도 노이즈 1σ [m/s²].\n\n'
       + '**`update(x, P, z, sigma_z)`** → `(x_new, P_new)`. 위치 측정 `z` [m] 하나로 갱신합니다. $H = [1\\ \\ 0]$, $R = \\sigma_z^2$ 이고 $\\nu = z - Hx^-$, $S = HP^-H^{\\mathsf T} + R$, $K = P^-H^{\\mathsf T}/S$, $x = x^- + K\\nu$, $P = (I - KH)P^-$ 입니다. `sigma_z` 는 측정 노이즈 1σ [m].\n\n'
       + '**`kf_delayed(n_steps, meas, dt, sigma_a, sigma_z, x0, P0, max_delay)`** → `(xs, Ps)`. `xs` 는 모양 `(n_steps+1, 2)`, `Ps` 는 `(n_steps+1, 2, 2)` 입니다.\n\n'
-      + '`meas` 는 `(k_meas, k_arr, z)` 튜플의 리스트입니다. `z` 는 스텝 `k_meas` 에 **측정된** 위치이고, 필터는 이 값을 스텝 `k_arr` 부터 쓸 수 있습니다 (정수, `0 ≤ k_meas ≤ k_arr ≤ n_steps`, 리스트는 `k_arr` 오름차순). `x0`, `P0` 는 스텝 0 의 추정(측정을 넣기 전)입니다.\n\n'
+      + '`meas` 는 `(k_meas, k_arr, z)` 튜플의 리스트입니다. `z` 는 스텝 `k_meas` 에 **측정된** 위치이고, 필터는 이 값을 스텝 `k_arr` 부터 쓸 수 있습니다 (정수, `0 ≤ k_meas ≤ k_arr ≤ n_steps`, 리스트는 `k_arr` 오름차순). `x0`(길이 2: [m, m/s]), `P0`(2×2) 는 스텝 0 의 추정(측정을 넣기 전)입니다.\n\n'
       + '**`xs[k]`, `Ps[k]` 의 뜻**: `k_arr ≤ k` 인 측정만 가지고 구한 스텝 `k` 의 추정입니다. 단, 각 측정은 도착한 시각이 아니라 **자기가 측정된 스텝 `k_meas` 에서** 갱신에 쓰여야 합니다(그 스텝의 예측 뒤, 다음 스텝의 예측 앞). 같은 스텝에 측정이 여러 개면 리스트 순서대로 차례로 갱신합니다. 스텝 0 에서는 예측을 하지 않습니다.\n\n'
-      + '**버퍼 한계**: `k_arr - k_meas > max_delay` 인 측정은 너무 오래되어 버퍼에 없으므로 **버립니다**(무시).\n\n'
+      + '**버퍼 한계**: `max_delay` 는 스텝 수(정수)입니다. `k_arr - k_meas > max_delay` 인 측정은 너무 오래되어 버퍼에 없으므로 **버립니다**(무시).\n\n'
       + '방법: 스텝마다 "갱신 전 상태"와 "그 스텝에서 쓴 측정"을 저장해 두고, 측정이 도착하면 `k_meas` 로 되돌아가 측정을 추가한 뒤 지금 스텝까지 예측·갱신을 다시 계산합니다.',
     en: 'Estimate the state $x = [p, v]$ (position [m], velocity [m/s]) of a drone moving along one axis. Complete three functions. Step $k$ is time $k\\cdot$`dt` [s].\n\n'
       + '**`predict(x, P, dt, sigma_a)`** → `(x_pred, P_pred)`. One prediction step of the constant-velocity model: $F = \\begin{bmatrix}1 & dt\\\\ 0 & 1\\end{bmatrix}$, $Q = \\sigma_a^2\\begin{bmatrix}dt^4/4 & dt^3/2\\\\ dt^3/2 & dt^2\\end{bmatrix}$, $x^- = Fx$, $P^- = FPF^{\\mathsf T} + Q$. `sigma_a` is the acceleration noise 1σ [m/s²].\n\n'
       + '**`update(x, P, z, sigma_z)`** → `(x_new, P_new)`. Update with one position measurement `z` [m]: $H = [1\\ \\ 0]$, $R = \\sigma_z^2$, $\\nu = z - Hx^-$, $S = HP^-H^{\\mathsf T} + R$, $K = P^-H^{\\mathsf T}/S$, $x = x^- + K\\nu$, $P = (I - KH)P^-$. `sigma_z` is the measurement noise 1σ [m].\n\n'
       + '**`kf_delayed(n_steps, meas, dt, sigma_a, sigma_z, x0, P0, max_delay)`** → `(xs, Ps)` with shapes `(n_steps+1, 2)` and `(n_steps+1, 2, 2)`.\n\n'
-      + '`meas` is a list of tuples `(k_meas, k_arr, z)`. `z` is the position **measured** at step `k_meas`; the filter can use it only from step `k_arr` on (integers, `0 ≤ k_meas ≤ k_arr ≤ n_steps`, list sorted by `k_arr`). `x0`, `P0` are the estimate at step 0 (before any measurement).\n\n'
+      + '`meas` is a list of tuples `(k_meas, k_arr, z)`. `z` is the position **measured** at step `k_meas`; the filter can use it only from step `k_arr` on (integers, `0 ≤ k_meas ≤ k_arr ≤ n_steps`, list sorted by `k_arr`). `x0` (length 2: [m, m/s]) and `P0` (2×2) are the estimate at step 0 (before any measurement).\n\n'
       + '**Meaning of `xs[k]`, `Ps[k]`**: the estimate at step `k` computed from the measurements with `k_arr ≤ k` only. Each measurement must be used for the update **at its own measurement step `k_meas`**, not at its arrival (after the prediction of that step, before the prediction of the next). Several measurements at one step are applied one after another in list order. No prediction is done at step 0.\n\n'
-      + '**Buffer limit**: a measurement with `k_arr - k_meas > max_delay` is too old to be in the buffer and is **discarded** (ignored).\n\n'
+      + '**Buffer limit**: `max_delay` is a number of steps (integer). A measurement with `k_arr - k_meas > max_delay` is too old to be in the buffer and is **discarded** (ignored).\n\n'
       + 'Method: store, for every step, the "state before the update" and "the measurements used at that step". When a measurement arrives, go back to `k_meas`, add it, and recompute prediction and update up to the present step.',
   },
   starter: `import numpy as np
 
 def predict(x, P, dt, sigma_a):
     # F, Q 를 만들고  x_pred = F x,  P_pred = F P F^T + Q
+    # build F, Q, then x_pred = F x, P_pred = F P F^T + Q
     return x, P
 
 def update(x, P, z, sigma_z):
@@ -39,7 +40,9 @@ def kf_delayed(n_steps, meas, dt, sigma_a, sigma_z, x0, P0, max_delay):
     xs = np.zeros((n_steps + 1, 2))
     Ps = np.zeros((n_steps + 1, 2, 2))
     prior = [None] * (n_steps + 1)            # prior[j]: 스텝 j 의 "갱신 전" (x, P)
+                                              # prior[j]: (x, P) of step j before its update
     used = [[] for _ in range(n_steps + 1)]   # used[j]: 스텝 j 에서 측정되어 이미 도착한 z 들
+                                              # used[j]: z measured at step j that have already arrived
     prior[0] = (x, P)
     for k in range(n_steps + 1):
         if k > 0:
@@ -49,9 +52,17 @@ def kf_delayed(n_steps, meas, dt, sigma_a, sigma_z, x0, P0, max_delay):
             if k_arr != k:
                 continue
             # 1) k - k_meas > max_delay 이면 버린다 (continue)
+            # 1) drop it if k - k_meas > max_delay (continue)
             # 2) used[k_meas] 에 z 를 추가한다
+            # 2) append z to used[k_meas]
             # 3) prior[k_meas] 로 되돌아가 스텝 k_meas .. k 를 다시 계산한다
-            #    스텝마다: (첫 스텝이 아니면) 예측 -> prior 갱신 -> used 의 측정으로 모두 갱신
+            # 3) go back to prior[k_meas] and recompute steps k_meas .. k
+            #    j == k_meas: 예측하지 않는다 (prior[k_meas] 는 이미 예측을 마친 '갱신 전' 상태)
+            #    j == k_meas: no predict (prior[k_meas] is already the predicted, pre-update state)
+            #    j >  k_meas: 예측 -> prior[j] 를 새 값으로 바꾼다
+            #    j >  k_meas: predict -> replace prior[j] with the new value
+            #    모든 j: used[j] 의 측정으로 차례로 갱신
+            #    every j: update with the measurements in used[j], in order
             pass
         xs[k] = x
         Ps[k] = P

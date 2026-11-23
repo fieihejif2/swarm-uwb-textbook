@@ -6,7 +6,7 @@ import { Vec, norm, vsub } from '../../sim/linalg';
 import { CbfPairParams, CbfPairResult, cbfRobustDesign, simulateCbfPair } from '../../sim/safety';
 import { der, ex } from '../../sources';
 import {
-  Button, Caption, CodeView, Demo, LineChart, LinkGroup, M, McPanel, P, Segmented, Slider, Stat, StatRow, Status, Val, seriesColor, useDebounced, useWidth,
+  Button, Caption, CfgVal, CodeView, Demo, LineChart, LinkGroup, M, McPanel, P, Segmented, Slider, SrcBadge, Stat, StatRow, Status, T, Val, seriesColor, useDebounced, useWidth,
 } from '../../ui';
 import { cbfTask } from './tasks';
 
@@ -44,7 +44,7 @@ function PairView({ run, frame, dMin, body }: { run: CbfPairResult; frame: numbe
     </g>
   );
   return (
-    <div ref={ref} class="canvas-wrap" style={{ height: `${H}px` }}>
+    <div ref={ref} class="canvas-wrap plot" style={{ height: `${H}px` }}>
       {width > 0 && (
         <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} role="img"
           aria-label={tr({ ko: `두 기체의 궤적을 위에서 본 그림. 시각 ${fmt(run.t[f], 3)} 초, 두 기체 사이 거리 ${fmt(run.d[f], 3)} m, 최소 거리 한계 ${fmt(dMin, 3)} m`, en: `Top view of the two trajectories. Time ${fmt(run.t[f], 3)} s, distance ${fmt(run.d[f], 3)} m, minimum-distance limit ${fmt(dMin, 3)} m` })}>
@@ -56,15 +56,71 @@ function PairView({ run, frame, dMin, body }: { run: CbfPairResult; frame: numbe
           {[INIT.pA, INIT.pB].map((q, i) => (
             <g key={i}>
               <path d={`M${sx(q[0]) - 5},${sy(q[1]) - 5}l10,10m0,-10l-10,10`} stroke="var(--text-2)" stroke-width="2" />
-              <text class="tick" x={sx(q[0])} y={sy(q[1]) - 10} text-anchor="middle">{tr(i === 0 ? { ko: 'A 출발 · B 목표', en: 'A start · B goal' } : { ko: 'B 출발 · A 목표', en: 'B start · A goal' })}</text>
+              <text class="tick" x={sx(q[0]) + (q[0] > 0 ? 8 : -8)} y={sy(q[1]) - 12} text-anchor={q[0] > 0 ? 'end' : 'start'} style={{ fill: 'var(--text)' }}>{tr(i === 0 ? { ko: 'A 출발 · B 목표', en: 'A start · B goal' } : { ko: 'B 출발 · A 목표', en: 'B start · A goal' })}</text>
             </g>
           ))}
           {drone(a, 1, 'A', '')}
           {drone(b, 2, 'B', '5 3')}
           <rect x="12" y={H - 14} width={k} height="2" fill="var(--text-2)" />
-          <text class="tick" x="12" y={H - 19}>1 m</text>
-          {hit && <text class="ref-label" x={W - 10} y="18" text-anchor="end" fill="var(--critical-text)">{tr({ ko: '✕ d_min 침범', en: '✕ inside d_min' })}</text>}
+          <text class="tick" x="12" y={H - 19} style={{ fill: 'var(--text)' }}>1 m</text>
+          {hit && <text class="ref-label" x={W - 10} y="18" text-anchor="end" style={{ fill: 'var(--critical-text)' }}>{tr({ ko: '✕ d_min 침범', en: '✕ inside d_min' })}</text>}
         </svg>
+      )}
+    </div>
+  );
+}
+
+/** 결과표. 폭이 좁으면(폰) 필터마다 카드 한 장으로 쌓아 첫 열이 눌리거나 판정이 가로 스크롤 밖으로 밀리지 않게 한다. */
+function CbfResults({ runs, mode, dMin }: { runs: Record<Mode, CbfPairResult>; mode: Mode; dMin: number }) {
+  const [ref, w] = useWidth<HTMLDivElement>();
+  const narrow = w > 0 && w < 560;
+  const H = {
+    closest: { ko: '가장 가까웠던 거리', en: 'Closest distance' }, stand: { ko: 'd_min 보다 얼마나 멀리', en: 'Stand-off above d_min' },
+    goal: { ko: '둘 다 목표에 닿은 시각', en: 'Time both reached the goal' },
+  };
+  const rows = MODES.map((m) => {
+    const r = runs[m.value], tg = goalTime(r);
+    return {
+      m, cur: m.value === mode,
+      closest: <Val v={r.minDist} unit="m" src={SIM} />,
+      stand: <Val v={(r.minDist - dMin) * 100} unit="cm" src={SIM} />,
+      goal: tg === null ? tr({ ko: '20초 안에 못 닿음', en: 'not within 20 s' }) : <Val v={tg} unit="s" src={SIM} />,
+      verdict: r.violated
+        ? <Status kind="bad">{tr({ ko: '침범', en: 'violated' })}</Status>
+        : tg === null ? <Status kind="warn">{tr({ ko: '안전하지만 멈춤', en: 'safe but stuck' })}</Status> : <Status kind="good">{tr({ ko: '지킴', en: 'kept' })}</Status>,
+    };
+  });
+  return (
+    <div ref={ref} data-testid="ch8-cbf-table">
+      {narrow ? (
+        <div role="list" style={{ display: 'grid', gap: '6px', margin: '8px 0' }}>
+          {rows.map((r) => (
+            <div role="listitem" key={r.m.value} style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '8px 10px', background: r.cur ? 'var(--surface-2)' : 'var(--surface)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '4px 10px', flexWrap: 'wrap' }}><b>{tr(r.m.label)}</b>{r.verdict}</div>
+              <div class="small" style={{ lineHeight: 1.6 }}>
+                {tr(H.closest)}: {r.closest}<br />{tr(H.stand)}: {r.stand}<br />{tr(H.goal)}: {r.goal}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr>
+              <th>{tr({ ko: '필터', en: 'Filter' })}</th>
+              <th class="r">{tr(H.closest)}</th><th class="r">{tr(H.stand)}</th><th class="r">{tr(H.goal)}</th>
+              <th>{tr({ ko: '판정', en: 'Verdict' })}</th>
+            </tr></thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.m.value} style={r.cur ? { background: 'var(--surface-2)' } : undefined}>
+                  <td style={{ whiteSpace: 'nowrap' }}><b>{tr(r.m.label)}</b></td>
+                  <td class="r">{r.closest}</td><td class="r">{r.stand}</td><td class="r">{r.goal}</td><td>{r.verdict}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -101,7 +157,7 @@ export function CbfDemo() {
         <Demo title={{ ko: '정면 교차: 필터를 끄고, 켜고, 강건하게', en: 'Head-on swap: filter off, on, and robust' }} testId="ch8-cbf-demo">
           <P ko="두 기체가 같은 고도에서 서로의 자리로 갑니다. 필터가 없으면 한가운데에서 부딪힙니다. 필터는 각 기체의 **원래 명령**(목표를 향한 속도)을 받아 아래 조건을 어길 때만 고칩니다. 수식의 항을 가리키면 코드의 해당 줄이, $d_{\min}$ 이 든 항을 가리키면 그래프의 한계선이 강조됩니다."
             en="Two vehicles at the same altitude head for each other's position. Without a filter they collide in the middle. The filter takes each vehicle's **nominal command** (velocity towards its goal) and changes it only when the condition below would be violated. Point at a term to highlight the matching code line; the term containing $d_{\min}$ also highlights the limit line in the chart." />
-          <M block tex={String.raw`\lk{normal}{\hat n}^{\T}\,\lk{w}{w_i} \;\ge\; -\lk{half}{\tfrac{\alpha}{2}}\,\lk{h}{\big(\norm{r}_E - d_{\min}\big)}, \qquad \lk{proj}{w_i \leftarrow w_i + \big(b - \hat n^{\T} w_i\big)\,\hat n}, \qquad u_i = \lk{scale}{S^{-1}}\,w_i`} />
+          <M block tex={String.raw`\lk{normal}{\hat n}^{\T}\,\lk{w}{w_i} \;\ge\; -\lk{half}{\tfrac{\alpha}{2}}\,\lk{h}{\big(\norm{r}_{k_z} - d_{\min}\big)}, \qquad \lk{proj}{w_i \leftarrow w_i + \big(b - \hat n^{\T} w_i\big)\,\hat n}, \qquad u_i = \lk{scale}{S^{-1}}\,w_i`} />
           <p class="link-hint">{tr({ ko: '↑ 수식의 항을 가리키면 코드 줄과 그래프의 선이 함께 강조됩니다.', en: '↑ Point at a term to highlight the matching code lines and chart line.' })}</p>
           <Segmented label={{ ko: '안전 필터', en: 'Safety filter' }} value={mode} onChange={(m) => { setMode(m); setFrameSel(null); }} options={MODES} testId="ch8-cbf-mode" />
           <div class="controls">
@@ -113,8 +169,10 @@ export function CbfDemo() {
           <div class="btn-row" style={{ marginBottom: '10px' }}>
             <Button onClick={() => { setEps(0); setAge(0); setFrameSel(null); }} testId="ch8-cbf-perfect">{tr({ ko: '완벽한 정보로 (오차 0, 나이 0)', en: 'Perfect information (error 0, age 0)' })}</Button>
             <Button onClick={() => { setEps(0.03); setAge(0.05); setFrameSel(null); }}>{tr({ ko: '오차와 지연 넣기 (3 cm, 50 ms)', en: 'Add error and delay (3 cm, 50 ms)' })}</Button>
+            <SrcBadge src={ex(undefined, { ko: '기본 필터가 조금씩 침범하는 모습을 보여 주려고 고른 값입니다. 위 슬라이더로 바꿀 수 있습니다.', en: 'Values chosen to show the basic filter slipping a little; change them with the sliders above.' })} />
             <Button onClick={() => { setSeed(seed + 1); setFrameSel(null); }}>{tr({ ko: '다른 노이즈로 다시', en: 'Different noise' })}</Button>
           </div>
+          <p class="small muted"><T ko="이 데모가 전역 설정에서 가져오는 값 — 최대 속도 $v_{\max}$ (위 $E$ 의 식에 들어감): " en="Values this demo takes from the global settings — max speed $v_{\max}$ (enters $E$ above): " /><CfgVal path="vehicle.vMax" /><T ko=" · 다운워시 비율 $k_z$: " en=" · downwash ratio $k_z$: " /><CfgVal path="safety.downwashRatio" /></p>
           <StatRow>
             <Stat label={{ ko: '상대 위치 오차 한계 $E = 2\\varepsilon + v_{\\max} t_{\\text{age}}$', en: 'Relative position error bound $E = 2\\varepsilon + v_{\\max} t_{\\text{age}}$' }} value={E * 100} unit="cm" src={der('ch8#cbf-robust')} />
             <Stat label={{ ko: '강건 조건 $d_{\\min} > 3E$', en: 'Robust condition $d_{\\min} > 3E$' }} value={3 * E} unit="m" src={der('ch8#cbf-robust', { ko: '3E 의 값. d_min 이 이보다 커야 보장이 성립합니다.', en: 'The value of 3E. d_min must exceed it for the guarantee to hold.' })} status={dMin > 3 * E ? 'good' : 'bad'} />
@@ -123,7 +181,7 @@ export function CbfDemo() {
           </StatRow>
           <PairView run={cur} frame={frame} dMin={prm.dMin} body={body} />
           <div class="slider" style={{ marginTop: '6px' }}>
-            <div class="top"><label class="ctl-label" for="ch8-cbf-time">{tr({ ko: '시각 (처음에는 가장 가까워진 순간)', en: 'Time (initially the closest approach)' })}</label><span class="val">{fmt(cur.t[frame], 3)} s · {tr({ ko: '거리', en: 'distance' })} {fmt(cur.d[frame], 3)} m</span></div>
+            <div class="top"><label class="ctl-label" for="ch8-cbf-time">{tr({ ko: '시각 (처음에는 가장 가까워진 순간)', en: 'Time (initially the closest approach)' })}</label><span class="val">{fmt(cur.t[frame], 3)} s · {tr({ ko: '거리', en: 'distance' })} {fmt(cur.d[frame], 3)} m<SrcBadge src={SIM} /></span></div>
             <input id="ch8-cbf-time" type="range" min={0} max={cur.t.length - 1} step={1} value={frame} data-testid="ch8-cbf-time" onInput={(e) => setFrameSel(Number((e.target as HTMLInputElement).value))} />
           </div>
           <Caption src={SIM}>{tr({ ko: '위에서 본 모습. 실선은 A, 점선은 B 의 궤적입니다. 기체 둘레의 옅은 원은 지름이 d_min 이어서, 두 원이 겹치면 최소 거리를 침범한 것입니다.', en: 'Top view. Solid line: trajectory of A; dashed: B. The pale circle around each vehicle has diameter d_min, so overlapping circles mean the minimum distance is violated.' })}</Caption>
@@ -132,38 +190,15 @@ export function CbfDemo() {
             series={MODES.map((m, i) => ({ name: m.label, x: runs[m.value].t, y: runs[m.value].d, slot: i + 1, width: m.value === mode ? 3 : 1.5, faint: m.value !== mode }))}
             refLines={[{ y: prm.dMin, label: { ko: `d_min = ${fmt(prm.dMin, 3)} m`, en: `d_min = ${fmt(prm.dMin, 3)} m` }, slot: 8, link: 'h' }]}
             xDomain={[0, tEnd]} yDomain={[0, 4.2]} src={SIM} testId="ch8-cbf-chart" />
-          <div class="table-wrap">
-            <table class="tbl" data-testid="ch8-cbf-table">
-              <thead><tr>
-                <th>{tr({ ko: '필터', en: 'Filter' })}</th>
-                <th class="r">{tr({ ko: '가장 가까웠던 거리', en: 'Closest distance' })}</th>
-                <th class="r">{tr({ ko: 'd_min 보다 얼마나 멀리', en: 'Stand-off above d_min' })}</th>
-                <th class="r">{tr({ ko: '둘 다 목표에 닿은 시각', en: 'Time both reached the goal' })}</th>
-                <th>{tr({ ko: '판정', en: 'Verdict' })}</th>
-              </tr></thead>
-              <tbody>
-                {MODES.map((m) => {
-                  const r = runs[m.value], tg = goalTime(r);
-                  return (
-                    <tr key={m.value} style={m.value === mode ? { background: 'var(--surface-2)' } : undefined}>
-                      <td><b>{tr(m.label)}</b></td>
-                      <td class="r"><Val v={r.minDist} unit="m" src={SIM} /></td>
-                      <td class="r"><Val v={(r.minDist - prm.dMin) * 100} unit="cm" src={SIM} /></td>
-                      <td class="r">{tg === null ? tr({ ko: '20초 안에 못 닿음', en: 'not within 20 s' }) : <Val v={tg} unit="s" src={SIM} />}</td>
-                      <td>{r.violated
-                        ? <Status kind="bad">{tr({ ko: '침범', en: 'violated' })}</Status>
-                        : tg === null ? <Status kind="warn">{tr({ ko: '안전하지만 멈춤', en: 'safe but stuck' })}</Status> : <Status kind="good">{tr({ ko: '지킴', en: 'kept' })}</Status>}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <CbfResults runs={runs} mode={mode} dMin={prm.dMin} />
           <P ko="**읽는 법.** 완벽한 정보에서는 기본 필터가 $d_{\min}$ 을 정확히 지킵니다. 오차와 지연을 넣으면 기본 필터는 한계선 바로 위를 스치다가 살짝 넘습니다. 필터가 믿는 거리와 실제 거리가 다르기 때문입니다. 강건 필터는 $d_{\min}$ 을 지키지만 그 대가로 더 멀리 돌아가고 더 늦게 도착합니다. 오차를 더 키워 $d_{\min} \le 3E$ 가 되면 강건 필터는 아예 다가가지 못하게 막습니다(안전하지만 멈춤)."
             en="**How to read it.** With perfect information the basic filter keeps $d_{\min}$ exactly. With error and delay the basic filter skims the limit line and slips just below it, because the distance it believes differs from the true one. The robust filter keeps $d_{\min}$, at the price of a wider detour and a later arrival. Increase the error until $d_{\min} \le 3E$ and the robust filter refuses to let them approach at all (safe but stuck)." />
           <P ko="완벽한 정보에서 도착이 오히려 **늦는** 것도 눈여겨보세요. 두 기체가 정확히 마주 보면 서로를 똑바로 밀어내기만 해서 옆으로 비켜 가는 속도가 아주 느립니다. 노이즈가 이 대칭을 깨 주면 더 빨리 지나갑니다. 안전 필터는 **부딪히지 않는 것**만 보장하고 **길을 찾아 주지는 않습니다.** 길은 궤적 계획이 맡아야 합니다."
             en="Notice too that with perfect information the arrival is actually **later**. When the two vehicles face each other exactly, they only push straight back and slide sideways very slowly. Noise breaks that symmetry and they pass sooner. A safety filter guarantees only **not colliding**; it does **not find a way through**. That is the job of trajectory planning." />
-          <CodeView code={cbfTask.solution} links={cbfTask.links} />
+          <details style={{ marginTop: '8px' }} data-testid="ch8-cbf-code">
+            <summary style={{ cursor: 'pointer', fontWeight: 650 }}>{tr({ ko: '수식과 연결된 코드 보기 (이 절 끝 손코딩 과제의 기준 답안입니다 — 먼저 풀어 보려면 열지 마세요)', en: 'Show the code linked to the formula (the reference solution of the coding task at the end of this section — keep it closed if you want to try first)' })}</summary>
+            <CodeView code={cbfTask.solution} links={cbfTask.links} />
+          </details>
         </Demo>
       </LinkGroup>
       <P ko="한 번의 실행은 한 번의 주사위입니다(0장의 함정). 교차 방향과 고도 차이를 무작위로 바꿔 가며 수백 번 반복해, 가장 가까웠던 거리의 분포를 봅니다. 여기서는 고도 차이가 있으므로 거리는 **타원체 거리**($k_z$ = {{cfg:safety.downwashRatio}})입니다. 위 슬라이더의 값이 그대로 쓰입니다."

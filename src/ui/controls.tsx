@@ -1,5 +1,5 @@
 import { ComponentChildren } from 'preact';
-import { useId } from 'preact/hooks';
+import { useEffect, useId, useRef, useState } from 'preact/hooks';
 import { fieldMeta, fieldSource } from '../app/fields';
 import { L, fmt, tr } from '../app/i18n';
 import { config, getPath, setPath } from '../app/store';
@@ -45,10 +45,21 @@ export function Slider(p: SliderProps) {
 export function CfgSlider({ path, min, max, step, testId }: { path: string; min?: number; max?: number; step?: number; testId?: string }) {
   const m = fieldMeta(path)!;
   const v = getPath(config.value, path) as number;
+  // 끄는 동안에는 이 슬라이더의 표시값만 바꾸고, 손을 멈추면(150 ms) 전역 설정에 반영한다.
+  // 전역 값이 바뀌면 화면의 모든 데모가 다시 계산되므로, 끄는 동안 매번 반영하면 화면이 멈춘다.
+  const [draft, setDraft] = useState<number | null>(null);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const shown = draft ?? v * m.scale;
   return (
     <Slider
-      label={m.label} value={v * m.scale} min={min ?? m.min} max={max ?? m.max} step={step ?? m.step} unit={m.unit}
-      src={fieldSource(path, v)} onChange={(x) => setPath(path, x / m.scale)} testId={testId ?? `cfg-${path}`}
+      label={m.label} value={shown} min={min ?? m.min} max={max ?? m.max} step={step ?? m.step} unit={m.unit}
+      src={fieldSource(path, v)} testId={testId ?? `cfg-${path}`}
+      onChange={(x) => {
+        setDraft(x);
+        clearTimeout(timer.current);
+        timer.current = window.setTimeout(() => { setPath(path, x / m.scale); setDraft(null); }, 150);
+      }}
     />
   );
 }

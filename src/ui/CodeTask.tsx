@@ -88,7 +88,7 @@ export function CodeTask({ task }: { task: CodingTask }) {
         </button>
         <button type="button" class="btn" onClick={() => { if (confirm(tr({ ko: '작성한 코드를 지우고 처음 상태로 되돌릴까요?', en: 'Discard your code and restore the starter?' }))) { setCode(task.starter); setRes(null); } }}>{tr({ ko: '처음으로', en: 'Reset' })}</button>
         <button type="button" class="btn" onClick={() => setShowSol(!showSol)} aria-expanded={showSol} data-testid={`solution-${task.id}`}>{tr(showSol ? { ko: '정답 숨기기', en: 'Hide solution' } : { ko: '정답 보기', en: 'Show solution' })}</button>
-        <span class="muted small">Ctrl+Enter</span>
+        <span class="muted small kbd-hint">Ctrl+Enter</span>
       </div>
       <div aria-live="polite">
         {err && <p style={{ marginTop: '10px' }}><span class="status bad">✕ {err}</span></p>}
@@ -108,8 +108,8 @@ export function CodeTask({ task }: { task: CodingTask }) {
                   {!c.ok && (
                     <>
                       <div>{tr({ ko: c.detail_ko, en: c.detail_en })}</div>
-                      {c.got && <div class="muted small" style={{ fontFamily: 'var(--mono)', whiteSpace: 'pre-wrap' }}>{tr({ ko: '내 출력', en: 'Yours' })}: {c.got}</div>}
-                      {c.expected && <div class="muted small" style={{ fontFamily: 'var(--mono)', whiteSpace: 'pre-wrap' }}>{tr({ ko: '기준값', en: 'Expected' })}: {c.expected}</div>}
+                      {c.got && <div class="muted small grade-out" style={{ fontFamily: 'var(--mono)', whiteSpace: 'pre-wrap' }}>{tr({ ko: '내 출력', en: 'Yours' })}: {c.got}</div>}
+                      {c.expected && <div class="muted small grade-out" style={{ fontFamily: 'var(--mono)', whiteSpace: 'pre-wrap' }}>{tr({ ko: '기준값', en: 'Expected' })}: {c.expected}</div>}
                       {(c.hint_ko || c.hint_en) && <div class="hint">💡 {rich({ ko: c.hint_ko, en: c.hint_en })}</div>}
                     </>
                   )}
@@ -124,7 +124,7 @@ export function CodeTask({ task }: { task: CodingTask }) {
         <div style={{ marginTop: '12px' }}>
           <p class="muted small">{tr({ ko: '기준 구현입니다. 먼저 스스로 풀어 본 뒤에 비교해 보세요.', en: 'Reference implementation. Try it yourself first, then compare.' })}</p>
           <CodeView code={task.solution} links={task.links} />
-          <button type="button" class="btn" onClick={() => { setCode(task.solution); run(task.solution); }} data-testid={`fill-${task.id}`}>{tr({ ko: '정답을 편집기에 넣고 채점', en: 'Load solution into editor and grade' })}</button>
+          <button type="button" class="btn" onClick={() => { if (code !== task.starter && code !== task.solution && !confirm(tr({ ko: '편집기의 내 코드를 정답으로 덮어씁니다. 계속할까요?', en: 'This replaces your code in the editor with the solution. Continue?' }))) return; setCode(task.solution); run(task.solution); }} data-testid={`fill-${task.id}`}>{tr({ ko: '정답을 편집기에 넣고 채점', en: 'Load solution into editor and grade' })}</button>
         </div>
       )}
     </div>

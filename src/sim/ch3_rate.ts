@@ -81,3 +81,35 @@ export function positionErrorMc(mode: 'twr' | 'tdoa', anchors: Vec[], p: Vec, si
   }
   return n ? { rmsH: Math.sqrt(sh / n), rmsV: Math.sqrt(sv / n) } : { rmsH: NaN, rmsV: NaN };
 }
+
+/**
+ * steadyStatePosSigma 와 같은 1축 등속 칼만 필터이지만, 외란을 "갱신율과 무관하게" 둔 경우.
+ * 모르는 가속도는 기준 간격 dt0 = 1/baseRateHz 마다 새로 뽑히고(각 칸에서 평균 0, 표준편차 sigmaA, 칸 안에서는 일정),
+ * 측정은 m = round(baseRateHz / rateHz) 칸마다 한 번 들어온다. 그래서 갱신율을 바꿔도 외란의 물리적 세기는 그대로다.
+ * (steadyStatePosSigma 는 가속도가 "측정 간격 T 동안" 일정하다고 두므로, T 가 길수록 외란도 더 오래 가는 셈이 된다.)
+ * 리카티 반복(예측 m번 → 갱신 1번)을 수렴할 때까지 돌려 갱신 직후의 위치 오차 1σ 를 돌려준다.
+ */
+export function steadyStatePosSigmaFixedDisturbance(measSigma: number, rateHz: number, sigmaA: number, baseRateHz: number): number {
+  if (!(measSigma > 0) || !(rateHz > 0) || !(baseRateHz > 0)) return measSigma;
+  const m = Math.max(1, Math.round(baseRateHz / rateHz));
+  const dt = 1 / baseRateHz, q = sigmaA * sigmaA, r = measSigma * measSigma;
+  const q11 = (q * dt ** 4) / 4, q12 = (q * dt ** 3) / 2, q22 = q * dt * dt;
+  let a = r, b = 0, c = r; // P = [[a, b], [b, c]] (갱신 직후)
+  for (let it = 0; it < 20000; it++) {
+    let pa = a, pb = b, pc = c;
+    for (let s = 0; s < m; s++) {
+      // P ← F P Fᵀ + Q,  F = [[1, dt], [0, 1]]
+      const na = pa + 2 * dt * pb + dt * dt * pc + q11;
+      const nb = pb + dt * pc + q12;
+      const nc = pc + q22;
+      pa = na; pb = nb; pc = nc;
+    }
+    // 위치 측정 H = [1, 0]
+    const S = pa + r, ka = pa / S, kb = pb / S;
+    const ua = (1 - ka) * pa, ub = (1 - ka) * pb, uc = pc - kb * pb;
+    const done = Math.abs(ua - a) < 1e-15 * Math.max(a, 1e-30) + 1e-18;
+    a = ua; b = ub; c = uc;
+    if (done) break;
+  }
+  return Math.sqrt(Math.max(a, 0));
+}

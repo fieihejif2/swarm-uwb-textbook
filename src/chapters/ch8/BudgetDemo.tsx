@@ -1,8 +1,10 @@
 /** 데모 1-A: 오차 예산 워터폴 (수평 / 수직) + 수식 ↔ 막대 연동 */
-import { tr } from '../../app/i18n';
+import { fmt, tr } from '../../app/i18n';
 import { budget, config, setPath } from '../../app/store';
 import { der, ex } from '../../sources';
-import { Caption, CfgSlider, Demo, LinkGroup, M, P, Stat, StatRow, Status, Toggle, Waterfall } from '../../ui';
+import { Caption, CfgSlider, CfgVal, Demo, LinkGroup, M, P, SrcBadge, Stat, StatRow, Status, T, Toggle, Waterfall } from '../../ui';
+import { commHops } from '../../sim/budget';
+import { burstLengthQuantile } from '../../sim/loss';
 import type { WaterfallItem } from '../../ui';
 
 export function BudgetDemo() {
@@ -10,6 +12,7 @@ export function BudgetDemo() {
   const item = (id: string) => b.items.find((i) => i.id === id)!;
   const k = cfg.safety.kSigma;
   const extra = cfg.safety.extrapolate;
+  const lq = burstLengthQuantile(cfg.comm.loss, 1e-3);
   const stacked = cfg.formation.shape === 'stack';
   const spacing = cfg.formation.spacing;
   const need = stacked ? b.minSepV : b.minSepH;
@@ -76,6 +79,15 @@ export function BudgetDemo() {
           {ok
             ? <Status kind="good">{tr({ ko: '지금 대형 간격은 권장 최소 간격 이상입니다', en: 'The current formation spacing meets the recommended minimum' })}</Status>
             : <Status kind="bad">{tr({ ko: '지금 대형 간격이 권장 최소 간격보다 좁습니다', en: 'The current formation spacing is below the recommended minimum' })}</Status>}
+        </p>
+        <p class="small muted" data-testid="ch8-budget-inputs">
+          <T ko="통신 두 줄의 입력 — 무선 구간 수 $n$: " en="Inputs of the two communication rows — radio hops $n$: " /><b class="num">{commHops(cfg)}</b><SrcBadge src={der('ch6#ages', { ko: '전역 설정의 통신 구조에서: 지상국 중계 2, 기체 간 직접 1', en: 'From the communication structure in the settings: ground relay 2, direct 1' })} />
+          <T ko=" · 편도 지연 $\tau_c$: " en=" · one-way delay $\tau_c$: " /><CfgVal path="comm.delayMean" />
+          <T ko=" · 지터 $J$: " en=" · jitter $J$: " /><CfgVal path="comm.delayJitter" />
+          <T ko=" · 방송 주기 $T_c$: " en=" · broadcast period $T_c$: " /><b class="num">{fmt(1000 / cfg.comm.rate, 3)} ms</b><SrcBadge src={ex('comm.rate', { ko: '1 / 방송 주기', en: '1 / broadcast rate' })} />
+          <T ko=" · $L_{99.9}$: " en=" · $L_{99.9}$: " /><b class="num">{lq} {tr({ ko: '패킷', en: 'pkts' })}</b><SrcBadge src={der('ch7#ge-stationary')} />
+          <T ko=" (손실 모델 $p_{GB}$ " en=" (loss model $p_{GB}$ " /><CfgVal path="comm.loss.pGB" /><T ko=", $p_{BG}$ " en=", $p_{BG}$ " /><CfgVal path="comm.loss.pBG" /><T ko=", $h_G$ " en=", $h_G$ " /><CfgVal path="comm.loss.lossGood" /><T ko=", $h_B$ " en=", $h_B$ " /><CfgVal path="comm.loss.lossBad" />
+          <T ko="). 계산은 7장 **통신 항 계산**." en="). Computation: **Communication terms** in ch. 7." />
         </p>
         <Caption>{tr({
           ko: '막대 색은 항의 성격입니다(이름 끝의 괄호에도 적었습니다): 크기, 무작위, 편향, 확정. 두 표의 가로 눈금은 같습니다. 수직 쪽에서 달라지는 것은 첫 줄(다운워시)과 측위 오차가 들어가는 둘째·셋째 줄뿐이고, 지연 항 세 줄은 수평과 같습니다.',

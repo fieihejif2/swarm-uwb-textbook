@@ -8,10 +8,11 @@ import { Vec, dist } from '../../sim/linalg';
 import { Dop, dopFor, dopGrid, gaussNewtonRange, gaussNewtonTdoa, insideAnchorBox, pairsFor, rangeGeometry, tdoaGeometry } from '../../sim/positioning';
 import { Rng } from '../../sim/rng';
 import { normPdf, rms } from '../../sim/stats';
+import { C_LIGHT } from '../../sim/uwb';
 import { der, ex } from '../../sources';
 import {
   Button, Caption, CfgSlider, CodeTask, CodeView, Demo, Derivation, Histogram, LineChart, LinkGroup, List, M, McPanel, Note, P, Pitfall, PlanScale, PlanView, Predict,
-  Scene3D, Section, Segmented, Slider, SrcBadge, Stat, StatRow, Status, seriesColor, seriesDash, useDebounced,
+  Scene3D, Section, Segmented, Slider, SrcBadge, Stat, StatRow, Status, T, seriesColor, seriesDash, useDebounced,
 } from '../../ui';
 import { gaussNewtonTask, tasks } from './tasks';
 
@@ -28,6 +29,14 @@ const WHICH: { value: Which; label: { ko: string; en: string } }[] = [
 ];
 /** 히트맵 색 범위. DOP 가 이 범위를 넘으면 가장 진한 색으로 그린다. */
 const HEAT_MIN = 0.3, HEAT_MAX = 4;
+/** 지도들의 실제 값 범위에 맞춘 색 범위 (HEAT_MIN~HEAT_MAX 안에서). 여러 지도를 같은 색 범위로 비교할 때는 함께 넘긴다. */
+function heatRange(...grids: number[][][]): { min: number; max: number } {
+  let lo = Infinity, hi = -Infinity;
+  for (const g of grids) for (const row of g) for (const v of row) if (Number.isFinite(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  if (!(hi >= lo)) return { min: HEAT_MIN, max: HEAT_MAX };
+  lo = Math.max(HEAT_MIN, lo); hi = Math.min(HEAT_MAX, hi);
+  return hi - lo < 0.2 ? { min: lo, max: lo + 0.2 } : { min: lo, max: hi };
+}
 const DOP_SRC = der('ch2#gdop', { ko: '지금 앵커 배치와 태그 위치로 기하행렬 H 를 만들고 (HᵀH)⁻¹ 의 대각 성분으로 계산한 값', en: 'Computed from the diagonal of (HᵀH)⁻¹, with the geometry matrix H built from the current anchor layout and tag position' });
 const POS_SRC = der('ch2#gdop', { ko: 'DOP × 측정 노이즈 σ', en: 'DOP × measurement noise σ' });
 const LOCAL = { ko: '이 실험에서만 바꾸는 값', en: 'Local to this experiment' };
@@ -162,7 +171,7 @@ function GnDemo() {
   const idx = Array.from({ length: kk + 1 }, (_, i) => i);
   const all = [...sol.resRms, ...sol.stepLen].map(clampLog);
   const expected = sigma * Math.sqrt(Math.max(0, sol.nMeas - 2) / sol.nMeas);
-  const yLo = Math.min(...all, expected > 0 ? expected : Infinity) / 3, yHi = Math.max(...all) * 3;
+  const yLo = Math.min(...all, expected > 0 ? expected : Infinity) / 3, yHi = 10 ** Math.ceil(Math.log10(Math.max(...all) * 1.5)); // 위쪽 끝을 10의 거듭제곱으로 잡아 첫 잔차도 눈금 안에 들어오게
   const cur = sol.path[kk];
   const errNow = dist(cur, [tx, ty]);
   const SRC = der('ch2#gn', { ko: '아래 측정값에 가우스-뉴턴 갱신을 반복한 결과 (엔진의 gaussNewtonRange / gaussNewtonTdoa)', en: 'Gauss–Newton updates applied to the measurements below (engine functions gaussNewtonRange / gaussNewtonTdoa)' });
@@ -171,7 +180,7 @@ function GnDemo() {
       <Demo title={{ ko: '가우스-뉴턴을 한 걸음씩', en: 'Gauss–Newton, one step at a time' }} testId="ch2-gn-demo">
         <P ko="평면에서 푸는 위치 추정입니다. 그림을 누르면(또는 아래 슬라이더로) **처음 추정**을 옮길 수 있습니다. ‘다음 반복’을 누를 때마다 아래 식이 한 번 적용됩니다."
           en="Position estimation in a plane. Click the figure (or use the sliders) to move the **initial guess**. Each press of ‘Next iteration’ applies the formula below once." />
-        <M block tex={String.raw`\lk{upd}{x_{k+1} = x_k + \Delta x}, \qquad \lk{step}{\Delta x} \;=\; -\big(\lk{jac}{J}\T \lk{jac}{J}\big)^{-1}\, \lk{jac}{J}\T\, \lk{res}{r}`} />
+        <M block tex={String.raw`\lk{upd}{x^{(k+1)} = x^{(k)} + \Delta x}, \qquad \lk{step}{\Delta x} \;=\; -\big(\lk{jac}{J}\T \lk{jac}{J}\big)^{-1}\, \lk{jac}{J}\T\, \lk{res}{r}`} />
         <p class="link-hint">{tr({ ko: '↑ 수식의 항을 가리키면 그래프의 선과 (펼쳤다면) 코드 줄이 함께 강조됩니다.', en: '↑ Point at a term to highlight the matching chart line and (if expanded) code lines.' })}</p>
         <Segmented label={{ ko: '측정의 종류 (이 데모에서만)', en: 'Kind of measurement (this demo only)' }} value={mode} onChange={reset(setMode)} options={MODES} testId="ch2-gn-mode" />
         <div class="controls">
@@ -239,9 +248,9 @@ function GnDemo() {
           </div>
         </div>
         <Caption>{tr({
-          ko: `잡음이 0 이면 잔차는 계산 오차 수준까지 떨어집니다(그래프에서는 ${fmt(floor * 1e9)} nm 아래를 잘라 그립니다). 잡음이 있으면 잔차는 0 이 되지 못하고 이론선 근처에서 멈춥니다. 측정 n = ${sol.nMeas}개로 미지수 2개를 맞추고 남는 어긋남이기 때문입니다. 한 번의 잡음으로는 이론선 위아래로 흩어지고, 잡음을 여러 번 다시 뽑으면 평균적으로 그 높이가 됩니다.`,
-          en: `With zero noise the residual falls to round-off level (the chart clips below ${fmt(floor * 1e9)} nm). With noise it cannot reach zero and settles near the theory line: it is the mismatch left after fitting 2 unknowns to n = ${sol.nMeas} measurements. A single noise draw scatters around the line; over many draws it averages to that height.`,
-        })}<SrcBadge src={der('ch2#gn', { ko: '잔차 제곱합의 기대값은 (n − 미지수 개수)·σ²', en: 'The expected sum of squared residuals is (n − number of unknowns)·σ²' })} /></Caption>
+          ko: `잡음이 0 이면 잔차는 계산 오차 수준까지 떨어집니다(그래프에서는 ${fmt(floor * 1e9)} nm 아래를 잘라 그립니다). 잡음이 있으면 잔차는 0 이 되지 못하고 이론선 근처에서 멈춥니다. 측정 n = ${sol.nMeas}개로 미지수 2개를 맞추고 남는 어긋남이기 때문입니다. 미지수 하나를 맞출 때마다 잡음의 한 방향 몫(σ²)이 잔차에서 빠지므로, 잔차 제곱합의 기대값은 (n − 2)σ² 이고 이론선은 그 RMS 입니다(유도는 아래 DOP 절의 끝). 한 번의 잡음으로는 이론선 위아래로 흩어지고, 잡음을 여러 번 다시 뽑아 잔차 RMS 를 제곱해서 평균하면 그 높이가 됩니다(그냥 평균하면 조금 낮게 나옵니다).`,
+          en: `With zero noise the residual falls to round-off level (the chart clips below ${fmt(floor * 1e9)} nm). With noise it cannot reach zero and settles near the theory line: it is the mismatch left after fitting 2 unknowns to n = ${sol.nMeas} measurements. Each fitted unknown removes one direction's share (σ²) of the noise from the residual, so the expected sum of squared residuals is (n − 2)σ² and the line is its RMS (derived at the end of the DOP section below). A single noise draw scatters around the line; over many draws the mean of the squared residual RMS reaches that height (a plain mean comes out slightly lower).`,
+        })}<SrcBadge src={der('ch2#gdop', { ko: '잔차 제곱합의 기대값은 (n − 미지수 개수)·σ²', en: 'The expected sum of squared residuals is (n − number of unknowns)·σ²' })} /></Caption>
         <details style={{ marginTop: '8px' }} data-testid="ch2-gn-code">
           <summary style={{ cursor: 'pointer', fontWeight: 650 }}>{tr({ ko: '수식과 연결된 코드 보기 (바로 아래 과제의 기준 구현입니다 — 먼저 풀어 보려면 열지 마세요)', en: 'Show the code linked to the formula (the reference solution of the task just below — keep it closed if you want to try first)' })}</summary>
           <CodeView code={gaussNewtonTask.solution} links={gaussNewtonTask.links} />
@@ -281,8 +290,8 @@ function DopDemo() {
   return (
     <>
       <Demo title={{ ko: '앵커를 끌면 DOP 지도가 바뀐다', en: 'Drag the anchors and watch the DOP map change' }} testId="ch2-dop-demo">
-        <P ko="강당을 위에서 본 그림입니다. 색은 **비행 고도의 평면**에서 태그가 그 자리에 있을 때의 DOP 입니다(진할수록 나쁨). 마름모가 앵커이고, 끌거나(키보드: 앵커에 포커스 후 방향키) 아래에서 높이를 바꿀 수 있습니다. 여기서 바꾸는 앵커·모드·고도는 **전역 설정**이라 오차 예산과 다른 장도 함께 바뀝니다."
-          en="The hall from above. The colour is the DOP for a tag at that spot **in the plane of the flight height** (darker is worse). Diamonds are anchors: drag them (keyboard: focus an anchor, then arrow keys) or change their height below. Anchors, mode and height changed here are **global settings**, so the error budget and other chapters follow." />
+        <P ko="그림은 둘입니다. 왼쪽은 강당을 위에서 본 **평면도**(앵커를 끌어 옮김), 오른쪽은 같은 배치를 비스듬히 본 **3D 보기**(끌면 시점이 회전하고, 휠·핀치로 확대)입니다. 평면도의 색은 **비행 고도의 평면**에서 태그가 그 자리에 있을 때의 DOP 입니다(진할수록 나쁨. 색 범위는 지금 지도의 최솟값~최댓값에 맞추므로 색 막대의 숫자를 함께 보세요). 마름모가 앵커이고, 끌거나(키보드: 앵커에 포커스 후 방향키) 아래에서 높이를 바꿀 수 있습니다. 여기서 바꾸는 앵커·모드·고도는 **전역 설정**이라 오차 예산과 다른 장도 함께 바뀝니다."
+          en="There are two figures: on the left a **plan view** of the hall from above (drag anchors to move them), on the right a **3-D view** of the same layout (drag to rotate the view, wheel or pinch to zoom). In the plan view the colour is the DOP for a tag at that spot **in the plane of the flight height** (darker is worse; the colour range follows the minimum and maximum of the current map, so read the numbers on the colour bar too). Diamonds are anchors: drag them (keyboard: focus an anchor, then arrow keys) or change their height below. Anchors, mode and height changed here are **global settings**, so the error budget and other chapters follow." />
         <Segmented label={{ ko: '측위 모드 (전역 설정)', en: 'Positioning mode (global setting)' }} value={mode} onChange={(v) => setPath('uwb.mode', v)} options={MODES} testId="ch2-dop-mode" />
         <Segmented label={{ ko: '지도에 그릴 값', en: 'Quantity on the map' }} value={which} onChange={setWhich} options={WHICH} testId="ch2-dop-which" />
         <div class="controls">
@@ -293,7 +302,7 @@ function DopDemo() {
           <div onPointerDownCapture={() => { armed.current = true; }} onPointerUpCapture={() => { armed.current = false; }}>
             <PlanView hall={hall} anchors={anchors} onAnchorMove={moveAnchor} probe={[px, py]} maxHeight={380} testId="ch2-dop-plan" src={DOP_SRC}
               onProbe={(x, y) => { if (armed.current) { armed.current = false; setProbe([Math.round(x * 4) / 4, Math.round(y * 4) / 4]); } }}
-              heat={{ values: grid.values, min: HEAT_MIN, max: HEAT_MAX, label: { ko: `${whichLabel.ko} · ${mode === 'twr' ? 'TWR' : 'TDoA'}`, en: `${whichLabel.en} · ${mode === 'twr' ? 'TWR' : 'TDoA'}` } }}
+              heat={{ values: grid.values, ...heatRange(grid.values), label: { ko: `${whichLabel.ko} · ${mode === 'twr' ? 'TWR' : 'TDoA'}`, en: `${whichLabel.en} · ${mode === 'twr' ? 'TWR' : 'TDoA'}` } }}
               caption={tr({ ko: '빈 곳을 누르면 탐침(+)이 그 자리로 옵니다. 기본 배치에서는 모서리마다 낮은 앵커와 높은 앵커가 겹쳐 보입니다 — 하나를 끌어내면 아래 것이 드러납니다.', en: 'Click an empty spot to move the probe (+) there. In the default layout a low and a high anchor overlap at each corner — drag one away to reveal the other.' })} />
           </div>
           <div>
@@ -347,7 +356,7 @@ function DopDemo() {
           title={{ ko: '예측을 실험으로 확인: 탐침 위치에서 위치를 여러 번 풀어 보기', en: 'Checking the prediction: solving the position many times at the probe' }}
           experiment="positioning" metric="errH" testId="ch2-mc" defaultRuns={1000} src={MC_SRC}
           params={{ anchors, p: [px, py, z], mode, nlos: { sigma, pNlos: 0, biasMean: 0 } }}
-          xLabel={{ ko: '수평 오차의 크기 √(e_x² + e_y²) [m]', en: 'Horizontal error magnitude √(e_x² + e_y²) [m]' }}
+          xLabel={{ ko: '수평 오차의 크기 √(ε_x² + ε_y²) [m]', en: 'Horizontal error magnitude √(ε_x² + ε_y²) [m]' }}
           refLines={[{ x: sH, label: { ko: '이론 RMS = HDOP·σ', en: 'Theory RMS = HDOP·σ' }, slot: 2 }]}
           note={{
             ko: `위 데모의 탐침 (${fmt(px)}, ${fmt(py)}, ${fmt(z)}) m{{ex}} 에서 잡음 σ 가 섞인 측정 한 벌을 만들고 가우스-뉴턴으로 위치를 풉니다. 이것을 여러 번 되풀이해 오차의 분포를 봅니다. NLOS 는 껐습니다(4장에서 다룹니다). 탐침·앵커·모드를 바꾸면 결과가 지워지니 다시 돌리세요.`,
@@ -363,8 +372,8 @@ function DopDemo() {
                   <Stat label={{ ko: '실험: 수직 오차 RMS', en: 'Experiment: vertical error RMS' }} value={rms(ez) * 100} unit="cm" src={MC_SRC} />
                   <Stat label={{ ko: '이론: VDOP·$\\sigma$', en: 'Theory: VDOP·$\\sigma$' }} value={sV * 100} unit="cm" src={POS_SRC} />
                 </StatRow>
-                <Histogram title={{ ko: '수직 오차 e_z 의 분포와 이론 곡선', en: 'Distribution of the vertical error e_z with the theory curve' }} values={ez} bins={31} range={[-4 * sV, 4 * sV]}
-                  xLabel={{ ko: '수직 오차 e_z [m]', en: 'Vertical error e_z [m]' }} slot={3} src={MC_SRC}
+                <Histogram title={{ ko: '수직 오차 ε_z 의 분포와 이론 곡선', en: 'Distribution of the vertical error ε_z with the theory curve' }} values={ez} bins={31} range={[-4 * sV, 4 * sV]}
+                  xLabel={{ ko: '수직 오차 ε_z [m]', en: 'Vertical error ε_z [m]' }} slot={3} src={MC_SRC}
                   theory={{ name: { ko: '이론: 평균 0, 표준편차 VDOP·σ 인 정규분포', en: 'Theory: normal, mean 0, std VDOP·σ' }, pdf: (x) => normPdf(x, 0, sV) }} />
               </>
             );
@@ -410,11 +419,12 @@ function SameHeightPitfall() {
   const solSame = gaussNewtonRange(same, same.map((a) => dist(truth, a)), start).x;
   const solMixed = gaussNewtonRange(mixed, mixed.map((a) => dist(truth, a)), start).x;
   const flipped = Math.abs(solSame[2] - zf) > 0.05;
-  const heat = (g: { values: number[][] }) => ({ values: g.values, min: HEAT_MIN, max: HEAT_MAX, label: { ko: `VDOP · ${mode === 'twr' ? 'TWR' : 'TDoA'}`, en: `VDOP · ${mode === 'twr' ? 'TWR' : 'TDoA'}` } });
+  const shared = heatRange(gridMixed.values, gridLocal.values);
+  const heat = (g: { values: number[][] }) => ({ values: g.values, ...shared, label: { ko: `VDOP · ${mode === 'twr' ? 'TWR' : 'TDoA'}`, en: `VDOP · ${mode === 'twr' ? 'TWR' : 'TDoA'}` } });
   return (
     <Pitfall title={{ ko: '앵커를 모두 같은 높이에 달기', en: 'Mounting every anchor at the same height' }} testId="ch2-pitfall-height">
-      <P ko="천장 트러스나 벽 위쪽 한 줄에 앵커를 나란히 다는 것이 설치는 가장 쉽습니다. 무엇이 나빠지는지 지도와 숫자로 봅시다. 이 실험은 **사본**으로 하므로 전역 설정은 바뀌지 않습니다."
-        en="Mounting all anchors along one ceiling truss or one line high on the walls is the easiest installation. Let us see on the map and in numbers what gets worse. This experiment works on a **copy**; the global settings are untouched." />
+      <P ko="천장 트러스나 벽 위쪽 한 줄에 앵커를 나란히 다는 것이 설치는 가장 쉽습니다. 무엇이 나빠지는지 지도와 숫자로 봅시다. 실험용 배치는 앵커 8개를 모서리 4곳과 벽 중간 4곳에 모두 같은 높이로 답니다. 기준 배치(높이를 섞은 기본 배치)는 모서리마다 낮은 앵커와 높은 앵커를 겹쳐 두므로, 두 배치는 높이뿐 아니라 수평 위치도 조금 다릅니다(기준 배치에서 높이만 같게 하면 앵커가 둘씩 겹쳐 사실상 4개가 되기 때문입니다). 이 실험은 **사본**으로 하므로 전역 설정은 바뀌지 않습니다."
+        en="Mounting all anchors along one ceiling truss or one line high on the walls is the easiest installation. Let us see on the map and in numbers what gets worse. The experimental layout puts the eight anchors in the four corners and at the four wall midpoints, all at one height. The reference (the default mixed-height layout) stacks a low and a high anchor at each corner, so the two layouts differ slightly in horizontal position as well as in height (making only the heights equal in the reference would stack the anchors in pairs, leaving effectively four). This experiment works on a **copy**; the global settings are untouched." />
       <div class="btn-row" style={{ marginBottom: '10px' }}>
         <Button primary={!applied} onClick={() => setApplied(true)} disabled={applied} testId="ch2-same-apply">{tr({ ko: `▶ 앵커 8개를 모두 높이 ${fmt(zA)} m 에 달기`, en: `▶ Mount all 8 anchors at ${fmt(zA)} m` })}</Button>
         <Button onClick={() => setApplied(false)} disabled={!applied}>{tr({ ko: '높이를 섞은 배치로 되돌리기', en: 'Back to mixed heights' })}</Button>
@@ -439,6 +449,7 @@ function SameHeightPitfall() {
           return <Stat key={q.key} label={q.label} value={v} src={DOP_SRC} status={q.a === same ? (v > 2 * ref ? 'bad' : 'good') : undefined} />;
         })}
       </StatRow>
+      <p class="small muted">{tr({ ko: '✓ / ✕ 는 "이 고도에서 같은 높이 배치의 VDOP 가 기준 배치의 2배를 넘는가"만 봅니다. 그래서 TWR · 같은 높이의 ✓ 는 앵커보다 한참 아래인 이 고도에서만 맞는 판정입니다. 앵커 높이 근처에서 무너지는 것과 거울상 문제는 단추를 누르면 아래에 나옵니다.', en: '✓ / ✕ only checks "is the VDOP of the same-height layout more than twice the reference at this height?". The ✓ for TWR · same height therefore holds only at this height, well below the anchors. The collapse near the anchor height and the mirror-image problem appear below once you press the button.' })}</p>
       {applied && (
         <>
           <LineChart
@@ -575,7 +586,9 @@ function Body() {
   for (let i = 0; i < anchors.length; i++) for (let j = i + 1; j < anchors.length; j++) minSep = Math.min(minSep, dist(anchors[i], anchors[j]));
   const zs = anchors.map((a) => a[2]);
   const spread = Math.max(...zs) - Math.min(...zs);
-  const CFG_SRC = ex(undefined, { ko: '전역 설정의 앵커 좌표에서 바로 읽은 값', en: 'Read directly from the anchor coordinates in the global settings' });
+  const CFG_SRC = ex('anchors', { ko: '전역 설정의 앵커 좌표(위 DOP 데모에서 끌어 옮기거나 설정에서 바꿀 수 있음)에서 바로 읽거나 계산한 값', en: 'Read or computed directly from the anchor coordinates in the global settings (move them in the DOP demo above or in Settings)' });
+  const slotErr = C_LIGHT * cfg.uwb.clockDriftPpm * 1e-6 * cfg.uwb.tdoaSlotTime;
+  const zLo = Math.min(...mixed.map((a) => a[2])), zSame = same[0][2], hF = cfg.formation.height;
   return (
     <>
       <Section id="tri" title={{ ko: '거리 몇 개면 위치가 정해질까', en: 'How many ranges pin down a position?' }}>
@@ -590,16 +603,16 @@ function Body() {
           <M block tex={String.raw`(x - x_i)^2 + (y - y_i)^2 + (z - z_i)^2 = \rho_i^2, \qquad i = 1, \dots, N`} />
           <P ko="미지수는 세 개인데 식이 제곱 꼴이라 바로 풀기 어렵습니다. 요령은 **1번 식을 $i$ 번 식에서 빼는 것**입니다. 양변을 전개하면 $x^2 + y^2 + z^2$ 이 두 식에 똑같이 들어 있어서 사라지고, 1차식만 남습니다."
             en="There are three unknowns, but the equations are quadratic and awkward to solve directly. The trick is to **subtract equation 1 from equation $i$**. After expanding, $x^2 + y^2 + z^2$ appears identically in both and cancels, leaving a linear equation." />
-          <M block tex={String.raw`2(x_1 - x_i)\,x + 2(y_1 - y_i)\,y + 2(z_1 - z_i)\,z \;=\; \rho_i^2 - \rho_1^2 - \big(\norm{a_i}^2 - \norm{a_1}^2\big), \qquad i = 2, \dots, N`} />
-          <P ko="여기서 $\norm{a_i}^2 = x_i^2 + y_i^2 + z_i^2$ 입니다. 이 식에서 세 가지를 읽을 수 있습니다."
-            en="Here $\norm{a_i}^2 = x_i^2 + y_i^2 + z_i^2$. Three things can be read off." />
+          <M block tex={String.raw`2(x_1 - x_i)\,x + 2(y_1 - y_i)\,y + 2(z_1 - z_i)\,z \;=\; \rho_i^2 - \rho_1^2 - \big(\norm{a_i}^2 - \norm{a_1}^2\big)`} />
+          <P ko="여기서 $i = 2, \dots, N$ 이고 $\norm{a_i}^2 = x_i^2 + y_i^2 + z_i^2$ 입니다. 이 식에서 세 가지를 읽을 수 있습니다."
+            en="Here $i = 2, \dots, N$ and $\norm{a_i}^2 = x_i^2 + y_i^2 + z_i^2$. Three things can be read off." />
           <List items={[
             { ko: '1차식이 $N - 1$ 개, 미지수가 3개입니다. 풀리려면 $N - 1 \\ge 3$, 즉 **앵커가 4개 이상**{{der:ch2#trilateration|미지수 3개를 정하려면 독립인 1차식 3개가 필요|Three unknowns need three independent linear equations}} 있어야 합니다. 평면에서는 미지수가 2개라 3개면 됩니다(위 데모).', en: 'There are $N - 1$ linear equations and three unknowns. Solvability needs $N - 1 \\ge 3$, i.e. **at least four anchors**{{der:ch2#trilateration|미지수 3개를 정하려면 독립인 1차식 3개가 필요|Three unknowns need three independent linear equations}}. In a plane there are two unknowns, so three suffice (the demo above).' },
             { ko: '기하로 보면: 구 두 개가 만나면 원, 세 개가 만나면 보통 점 두 개가 남습니다. 두 점은 세 앵커가 놓인 평면에 대해 서로 **거울상**입니다. 네 번째 앵커가 그 평면 **밖**에 있어야 둘을 가릴 수 있습니다.', en: 'Geometrically: two spheres meet in a circle, three usually leave two points. These two are **mirror images** about the plane through the three anchors. A fourth anchor **off** that plane is needed to tell them apart.' },
             { ko: '앵커가 모두 같은 높이면 $z_1 - z_i = 0$ 이라, 위 1차식에서 $z$ 가 통째로 사라집니다. $x$, $y$ 는 구할 수 있지만 $z$ 는 원래의 제곱식에 $(z - z_a)^2$ 꼴로만 남아 **부호를 알 수 없습니다**. 앵커 평면의 위인지 아래인지 구별하지 못한다는 뜻이고, 함정 실험실에서 직접 확인합니다.', en: 'If all anchors share one height, $z_1 - z_i = 0$ and $z$ drops out of the linear equations entirely. $x$ and $y$ can be found, but $z$ survives only as $(z - z_a)^2$ in the original quadratic, so **its sign is unknown** — above or below the anchor plane cannot be told apart. The pitfall lab demonstrates it.' },
           ]} />
-          <P ko="실제 추정기는 이 1차식을 그대로 쓰지 않습니다. 잡음 $n$ 이 섞인 거리 $\rho + n$ 을 제곱하면 잡음이 $2\rho n$ 으로 바뀌어, 먼 앵커의 식일수록 더 시끄러워지기 때문입니다. 그래서 다음다음 절에서는 거리를 제곱하지 않고 그대로 맞추는 방법을 씁니다. 위 풀이는 ‘몇 개가 필요한가’를 세는 도구이자, 반복 계산의 처음 추정을 얻는 방법으로 기억해 두면 됩니다."
-            en="Real estimators do not use this linear form as is. Squaring a noisy range $\rho + n$ turns the noise into $2\rho n$, so equations from far anchors become noisier. Two sections below we therefore fit the ranges themselves, unsquared. Keep the linear solution as a tool for counting ‘how many are needed’ and as a way to get an initial guess for the iteration." />
+          <P ko="이 교재의 추정기는 이 1차식을 그대로 쓰지 않습니다(Crazyflie 펌웨어의 추정기도 측정 모델로 유클리드 거리 자체를 씁니다{{lit:cf-firmware-docs/twr-measurement-model}}). 잡음 $n$ 이 섞인 거리 $\rho + n$ 을 제곱하면 잡음이 $2\rho n$ 으로 바뀌어, 먼 앵커의 식일수록 더 시끄러워지기 때문입니다. 그래서 다음다음 절에서는 거리를 제곱하지 않고 그대로 맞추는 방법을 씁니다. 위 풀이는 ‘몇 개가 필요한가’를 세는 도구이자, 반복 계산의 처음 추정을 얻는 방법으로 기억해 두면 됩니다."
+            en="The estimator of this textbook does not use this linear form as is (the Crazyflie firmware estimator, too, uses the Euclidean distance itself as its measurement model{{lit:cf-firmware-docs/twr-measurement-model}}). Squaring a noisy range $\rho + n$ turns the noise into $2\rho n$, so equations from far anchors become noisier. Two sections below we therefore fit the ranges themselves, unsquared. Keep the linear solution as a tool for counting ‘how many are needed’ and as a way to get an initial guess for the iteration." />
         </Derivation>
         <P ko="Bitcraze 의 문서도 TWR 로 3D 위치를 구하는 이론적 최소 앵커 수는 4개, 현실적으로는 6개{{lit:lps-docs/twr-min-anchors}}라고 적고 있습니다. 최소보다 많은 앵커는 낭비가 아닙니다. 잡음을 서로 평균 내고, 한두 개가 가려져도 버티게 해 주는 여유입니다."
           en="The Bitcraze documentation likewise gives a theoretical minimum of 4 anchors for 3D positioning with TWR and 6 as the realistic number{{lit:lps-docs/twr-min-anchors}}. Anchors beyond the minimum are not wasted: they average out noise and keep the system alive when one or two are blocked." />
@@ -621,6 +634,8 @@ function Body() {
           ]} />
           <P ko="같은 내용을 이렇게 볼 수도 있습니다. 태그는 각 앵커까지의 거리에 **모든 앵커에 공통인 모르는 값** $b$ (태그 시계가 어긋난 시간 × 빛의 속도)가 더해진 $\norm{p - a_i} + b$ 를 잽니다. 두 개를 빼면 $b$ 가 사라지고 거리 차만 남습니다. 뒤집어 말하면 **모든 거리에 똑같이 더해지는 변화는 TDoA 가 보지 못합니다.** 이 성질이 뒤에서 수직 정확도를 결정합니다."
             en="The same thing can be seen differently. The tag measures each anchor distance plus **an unknown common to all anchors**, $b$ (the tag clock offset × the speed of light): $\norm{p - a_i} + b$. Subtracting two of them removes $b$ and leaves the range difference. Put the other way round: **a change added equally to all distances is invisible to TDoA.** This property will decide the vertical accuracy below." />
+          <P ko={`**태그 시계의 빠르기도 맞춰야 합니다.** $b$ 가 정말 모든 앵커에 **공통**이려면, 태그 시계가 앵커 시계와 같은 빠르기로 가야 합니다. 앵커들은 슬롯 간격 $T_{\\text{slot}}$ = {{cfg:uwb.tdoaSlotTime}} 으로 차례로 송신하므로, 태그가 자기 시계로 재는 도착 시각 차에는 이 송신 간격이 통째로 들어 있습니다. 1장에서 본 대로 클럭 주파수 오차(ppm)는 시계로 잰 **긴** 시간에 곱해지므로, 태그 시계가 앵커보다 $e$ 만큼 빠르면 슬롯 하나 떨어진 두 패킷의 거리 차에 $c\\,e\\,T_{\\text{slot}}$ 의 오차가 생깁니다. 지금 설정의 클럭 오차 {{cfg:uwb.clockDriftPpm}} 이면 ${fmt(slotErr, 3)} m{{der:ch2#tdoa-hyperbola|c × 클럭 주파수 오차 × 슬롯 간격|c × clock frequency error × slot spacing}} 로, 거리 차 노이즈({{cfg:uwb.sigmaTdoa}})보다 훨씬 큽니다. 그래서 TDoA 태그는 자기 시계와 앵커 시계의 **빠르기 비**를 추정해 도착 시각 차를 고쳐야 합니다. 개념적으로는, 같은 앵커가 연달아 보낸 패킷 두 개의 간격을 자기 시계로 재고 그 앵커의 시계로 잰 간격(패킷에 적혀 옴)과 비교하면 비를 알 수 있습니다(펌웨어의 실제 구현은 이 교재에서 다루지 않습니다). 이 보정을 마친 뒤에야 $b$ 가 모든 앵커에 공통이 됩니다. 이 교재의 모델은 보정이 되어 있다고 가정하고, 보정 뒤에 남는 작은 오차는 거리 차 노이즈에 들어 있다고 봅니다.`}
+            en={`**The tag clock rate must be matched too.** For $b$ to be truly **common** to all anchors, the tag clock must run at the same rate as the anchor clocks. The anchors transmit one after another with slot spacing $T_{\\text{slot}}$ = {{cfg:uwb.tdoaSlotTime}}, so the arrival-time difference the tag measures on its own clock contains this whole transmit spacing. As chapter 1 showed, a clock frequency error (ppm) multiplies the **long** time a clock measures: if the tag clock is fast by $e$ relative to the anchors, the range difference of two packets one slot apart is off by $c\\,e\\,T_{\\text{slot}}$. With the clock error of the current settings, {{cfg:uwb.clockDriftPpm}}, that is ${fmt(slotErr, 3)} m{{der:ch2#tdoa-hyperbola|c × 클럭 주파수 오차 × 슬롯 간격|c × clock frequency error × slot spacing}} — far larger than the range-difference noise ({{cfg:uwb.sigmaTdoa}}). A TDoA tag must therefore estimate the **rate ratio** between its clock and the anchor clock and correct the arrival-time differences. Conceptually, timing the spacing of two consecutive packets from the same anchor on its own clock and comparing it with the spacing on that anchor's clock (written into the packets) gives the ratio (the firmware's actual implementation is not covered in this textbook). Only after this correction is $b$ common to all anchors. The model of this textbook assumes the correction has been made and treats the small error left after it as part of the range-difference noise.`} />
         </Derivation>
       </Section>
 
@@ -628,29 +643,34 @@ function Body() {
         <P ko="실제 측정에는 잡음이 섞여서 원(또는 쌍곡선)들이 한 점에서 만나지 않습니다. 앵커가 최소 개수보다 많으면 식이 미지수보다 많으므로 ‘모든 식을 정확히 만족하는 점’은 아예 없습니다. 그래서 질문을 바꿉니다. **모든 측정과의 어긋남을 통틀어 가장 작게 만드는 점은 어디인가?** 어긋남의 제곱을 더해 최소화하는 이 방법이 **최소제곱**(least squares)입니다."
           en="Real measurements are noisy, so the circles (or hyperbolas) do not meet in one point. With more anchors than the minimum there are more equations than unknowns and no point satisfies them all. So we change the question: **which point makes the total mismatch with all measurements smallest?** Minimising the sum of squared mismatches is the method of **least squares**." />
         <Derivation id="gn" title={{ ko: '가우스-뉴턴 갱신식', en: 'The Gauss–Newton update' }}>
-          <P ko="측정 모델은 $\rho_i = \norm{p - a_i} + n_i$ 입니다($n_i$ 는 잡음 [m]). 어떤 추정 위치 $x$ 에 대해, **잔차**(residual)를 ‘그 위치라면 나왔어야 할 거리 − 실제로 잰 거리’로 정의합니다. 최소화할 **비용**은 잔차 제곱합의 절반입니다."
-            en="The measurement model is $\rho_i = \norm{p - a_i} + n_i$ ($n_i$ is noise [m]). For a candidate position $x$ define the **residual** as ‘the range that position would give − the range actually measured’. The **cost** to minimise is half the sum of squared residuals." />
+          <P ko="측정 모델은 $\rho_i = \norm{p - a_i} + n_i$ 입니다($n_i$ 는 잡음 [m]). 여기서부터 $x$ 는 좌표 하나가 아니라 추정 위치 **벡터** $x = (x_1, x_2, x_3)$ 입니다(평면이면 성분 2개. 지금까지의 $(x, y, z)$ 를 $(x_1, x_2, x_3)$ 로 부르는 셈입니다). 추정 위치 $x$ 에 대해 **잔차**(residual)를 ‘그 위치라면 나왔어야 할 거리 − 실제로 잰 거리’로 정의합니다. 최소화할 **비용**은 잔차 제곱합의 절반입니다."
+            en="The measurement model is $\rho_i = \norm{p - a_i} + n_i$ ($n_i$ is noise [m]). From here on $x$ is not one coordinate but the estimated position **vector** $x = (x_1, x_2, x_3)$ (two components in a plane; the earlier $(x, y, z)$ renamed $(x_1, x_2, x_3)$). For a candidate position $x$ define the **residual** as ‘the range that position would give − the range actually measured’. The **cost** to minimise is half the sum of squared residuals." />
           <M block tex={String.raw`r_i(x) = \norm{x - a_i} - \rho_i, \qquad F(x) = \tfrac12 \sum_{i=1}^{N} r_i(x)^2`} />
-          <P ko="$r_i$ 는 $x$ 의 1차식이 아니라서 한 번에 풀 수 없습니다. 그래서 지금 추정 $x_k$ 근처에서만 1차식으로 근사하고, 그 근사 문제를 풀어 조금 움직이고, 다시 근사하기를 되풀이합니다."
-            en="$r_i$ is not linear in $x$, so there is no one-shot solution. Instead we approximate it linearly near the current estimate $x_k$, solve that approximate problem, move a little, and repeat." />
-          <M block tex={String.raw`r(x_k + \Delta x) \;\approx\; r(x_k) + J\,\Delta x, \qquad J_{ij} = \frac{\partial r_i}{\partial x_j}`} />
+          <P ko="$r_i$ 는 $x$ 의 1차식이 아니라서 한 번에 풀 수 없습니다. 그래서 $k$ 번째 반복의 추정 $x^{(k)}$ (위첨자 $(k)$ 는 반복 번호, 아래첨자는 성분 번호) 근처에서만 1차식으로 근사하고, 그 근사 문제를 풀어 조금 움직이고, 다시 근사하기를 되풀이합니다."
+            en="$r_i$ is not linear in $x$, so there is no one-shot solution. Instead we approximate it linearly near the estimate of iteration $k$, $x^{(k)}$ (the superscript $(k)$ counts iterations; subscripts number components), solve that approximate problem, move a little, and repeat." />
+          <M block tex={String.raw`r(x^{(k)} + \Delta x) \;\approx\; r(x^{(k)}) + J\,\Delta x, \qquad J_{ij} = \frac{\partial r_i}{\partial x_j}`} />
           <P ko="$J$ 를 **야코비안**(Jacobian)이라고 합니다. 거리 $d_i = \sqrt{\sum_j (x_j - a_{ij})^2}$ 을 $x_j$ 로 미분하면 $(x_j - a_{ij})/d_i$ 이므로, $J$ 의 $i$ 번째 행은 앵커에서 태그를 향하는 **단위벡터**입니다."
             en="$J$ is the **Jacobian**. Differentiating the distance $d_i = \sqrt{\sum_j (x_j - a_{ij})^2}$ with respect to $x_j$ gives $(x_j - a_{ij})/d_i$, so row $i$ of $J$ is the **unit vector** from the anchor towards the tag." />
           <M block tex={String.raw`J = \begin{bmatrix} e_1\T \\ \vdots \\ e_N\T \end{bmatrix}, \qquad e_i = \frac{x - a_i}{\norm{x - a_i}}`} />
           <P ko="$e_i$ 는 길이가 1 이고 단위가 없습니다. 뜻은 이렇습니다: 태그가 $e_i$ 방향으로 1 m 움직이면 거리 $i$ 가 1 m 늘고, $e_i$ 에 수직으로 움직이면 (1차 근사로는) 변하지 않습니다. 이제 근사한 비용 $\tfrac12\norm{r + J\Delta x}^2$ 을 $\Delta x$ 로 미분해 0 으로 놓습니다."
             en="$e_i$ has length 1 and no unit. Its meaning: moving the tag 1 m along $e_i$ lengthens range $i$ by 1 m; moving perpendicular to $e_i$ leaves it unchanged (to first order). Now differentiate the approximate cost $\tfrac12\norm{r + J\Delta x}^2$ with respect to $\Delta x$ and set it to zero." />
+          <P ko="성분으로 쓰면 근사한 비용은 $\tfrac12\sum_i \big(r_i + \sum_l J_{il}\Delta x_l\big)^2$ 입니다. 이것을 $\Delta x_j$ 로 편미분합니다. (괄호)² 의 미분은 2 × (괄호) × (괄호의 미분)이고, 괄호를 $\Delta x_j$ 로 미분하면 $J_{ij}$ 만 남습니다."
+            en="In components the approximate cost is $\tfrac12\sum_i \big(r_i + \sum_l J_{il}\Delta x_l\big)^2$. Differentiate it with respect to $\Delta x_j$: the derivative of (bracket)² is 2 × (bracket) × (derivative of the bracket), and the bracket differentiated by $\Delta x_j$ leaves only $J_{ij}$." />
+          <M block tex={String.raw`\frac{\partial}{\partial \Delta x_j}\Big[\tfrac12 \sum_i \big(r_i + \textstyle\sum_l J_{il}\Delta x_l\big)^2\Big] = \sum_i J_{ij}\,\big(r_i + \textstyle\sum_l J_{il}\Delta x_l\big) = 0, \qquad j = 1, \dots, d`} />
+          <P ko="$\sum_i J_{ij}(\cdots)_i$ 는 행렬 $J\T$ 의 $j$ 번째 행과 벡터 $r + J\Delta x$ 의 곱입니다. $j$ = 1 … d 의 식을 위아래로 쌓으면 한 줄의 행렬식이 됩니다."
+            en="$\sum_i J_{ij}(\cdots)_i$ is row $j$ of the matrix $J\T$ times the vector $r + J\Delta x$. Stacking the equations for $j$ = 1 … d gives a single matrix equation." />
           <M block tex={String.raw`J\T\big(r + J\,\Delta x\big) = 0 \;\;\Longrightarrow\;\; (J\T J)\,\Delta x = -J\T r \;\;\Longrightarrow\;\; \Delta x = -(J\T J)^{-1} J\T r`} />
-          <P ko="가운데 식을 **정규방정식**(normal equations)이라고 합니다. $x_{k+1} = x_k + \Delta x$ 로 옮긴 뒤, 새 위치에서 $r$ 과 $J$ 를 **다시** 계산해 같은 일을 되풀이합니다. $\Delta x$ 가 충분히 작아지면 멈춥니다. 이것이 **가우스-뉴턴**(Gauss–Newton)법입니다."
-            en="The middle equation is the **normal equations**. Move to $x_{k+1} = x_k + \Delta x$, **recompute** $r$ and $J$ at the new position and repeat. Stop once $\Delta x$ is small enough. This is the **Gauss–Newton** method." />
+          <P ko="가운데 식을 **정규방정식**(normal equations)이라고 합니다. $x^{(k+1)} = x^{(k)} + \Delta x$ 로 옮긴 뒤, 새 위치에서 $r$ 과 $J$ 를 **다시** 계산해 같은 일을 되풀이합니다. $\Delta x$ 가 충분히 작아지면 멈춥니다. 이것이 **가우스-뉴턴**(Gauss–Newton)법입니다."
+            en="The middle equation is the **normal equations**. Move to $x^{(k+1)} = x^{(k)} + \Delta x$, **recompute** $r$ and $J$ at the new position and repeat. Stop once $\Delta x$ is small enough. This is the **Gauss–Newton** method." />
           <List items={[
-            { ko: 'TDoA 도 똑같습니다. 잔차가 $r_k = (\\norm{x - a_j} - \\norm{x - a_i}) - m_{ij}$ 로 바뀌고, 야코비안의 행이 두 단위벡터의 차 $e_j - e_i$ 가 될 뿐입니다.', en: 'TDoA works identically. The residual becomes $r_k = (\\norm{x - a_j} - \\norm{x - a_i}) - m_{ij}$ and the Jacobian row becomes the difference of two unit vectors, $e_j - e_i$.' },
-            { ko: '처음 추정 $x_0$ 이 필요합니다. 너무 엉뚱한 곳에서 시작하면 여러 번 헤매거나 엉뚱한 점(예: 거울상)으로 갈 수 있습니다. 비행 중에는 바로 앞 순간의 위치가 좋은 처음 추정입니다.', en: 'An initial guess $x_0$ is needed. Starting somewhere absurd can cost many iterations or lead to a wrong point (such as a mirror image). In flight the previous position is a good initial guess.' },
+            { ko: 'TDoA 도 똑같습니다. 앵커 쌍 $(i, j)$ 의 잔차가 $r_{ij} = (\\norm{x - a_j} - \\norm{x - a_i}) - m_{ij}$ 로 바뀌고, 야코비안의 행이 두 단위벡터의 차 $e_j - e_i$ 가 될 뿐입니다.', en: 'TDoA works identically. The residual of anchor pair $(i, j)$ becomes $r_{ij} = (\\norm{x - a_j} - \\norm{x - a_i}) - m_{ij}$ and the Jacobian row becomes the difference of two unit vectors, $e_j - e_i$.' },
+            { ko: '처음 추정 $x^{(0)}$ 이 필요합니다. 너무 엉뚱한 곳에서 시작하면 여러 번 헤매거나 엉뚱한 점(예: 거울상)으로 갈 수 있습니다. 비행 중에는 바로 앞 순간의 위치가 좋은 처음 추정입니다.', en: 'An initial guess $x^{(0)}$ is needed. Starting somewhere absurd can cost many iterations or lead to a wrong point (such as a mirror image). In flight the previous position is a good initial guess.' },
             { ko: '$J\\T J$ 의 역행렬이 있어야 합니다. 이것이 없거나 간신히 있는 경우가 바로 ‘앵커 배치가 나쁜’ 경우이고, 다음 절의 주제입니다.', en: '$J\\T J$ must be invertible. When it is not, or only barely, the anchor layout is ‘bad’ — the subject of the next section.' },
           ]} />
         </Derivation>
         <GnDemo />
-        <P ko="이 데모는 교재의 엔진을 씁니다. 엔진은 위 갱신식에 안전장치를 하나 더했습니다: 한 걸음 옮긴 뒤 비용이 오히려 늘면 걸음을 절반씩 줄입니다. 아래 과제에서는 그 안전장치 없이 갱신식 그대로를 구현합니다."
-          en="This demo runs on the textbook engine, which adds one safeguard to the update above: if a step would increase the cost, the step is halved until it does not. In the task below you implement the plain update without that safeguard." />
+        <P ko="이 데모는 1장에서 말한 교재의 **엔진**(데모를 계산하는 시뮬레이션 코드, `src/sim`)을 씁니다. 엔진은 위 갱신식에 안전장치를 하나 더했습니다: 한 걸음 옮긴 뒤 비용이 오히려 늘면 걸음을 절반씩 줄입니다. 아래 과제에서는 그 안전장치 없이 갱신식 그대로를 구현합니다."
+          en="This demo runs on the textbook **engine** mentioned in chapter 1 (the simulation code behind the demos, `src/sim`), which adds one safeguard to the update above: if a step would increase the cost, the step is halved until it does not. In the task below you implement the plain update without that safeguard." />
         <CodeTask task={gaussNewtonTask} />
       </Section>
 
@@ -658,7 +678,7 @@ function Body() {
         <P ko="거리를 10 cm{{ex}} 틀리게 재면 위치도 10 cm 틀릴까요? 그렇지 않습니다. 앵커들이 태그를 **어느 방향들에서** 보고 있느냐에 따라, 같은 거리 오차가 비슷한 크기의 위치 오차가 되기도 하고 몇 배로 부풀기도 합니다. 이 부풀림 배수가 **DOP**(정밀도 저하율, dilution of precision)입니다."
           en="If a range is off by 10 cm{{ex}}, is the position off by 10 cm? No. Depending on **from which directions** the anchors see the tag, the same range error becomes a position error of similar size or one several times larger. That inflation factor is the **DOP** (dilution of precision)." />
         <Predict id="ch2-same-height"
-          question={{ ko: `앵커 8개를 모두 같은 높이(천장 근처)에 달았습니다. 드론은 높이 ${fmt(cfg.formation.height)} m 로 납니다. TDoA 모드에서, 높이를 섞어 단 배치와 비교해 무엇이 가장 크게 나빠질까요?`, en: `All eight anchors are mounted at one height (near the ceiling). The drone flies at ${fmt(cfg.formation.height)} m. In TDoA mode, compared with a layout of mixed heights, what gets worse the most?` }}
+          question={{ ko: `앵커 8개{{ex}}를 모두 같은 높이(천장 근처)에 달았습니다. 드론은 높이 {{cfg:formation.height}} 로 납니다. TDoA 모드에서, 높이를 섞어 단 배치와 비교해 무엇이 가장 크게 나빠질까요?`, en: `All eight anchors{{ex}} are mounted at one height (near the ceiling). The drone flies at {{cfg:formation.height}}. In TDoA mode, compared with a layout of mixed heights, what gets worse the most?` }}
           choices={[
             { label: { ko: '수평 위치 (x, y) — 앵커가 모두 멀어지니까', en: 'Horizontal position (x, y) — all anchors are farther away' } },
             { label: { ko: '수직 위치 (z) — 높이를 알려 줄 방향이 없어지니까', en: 'Vertical position (z) — no direction is left that tells the height' }, correct: true },
@@ -666,40 +686,52 @@ function Body() {
             { label: { ko: '거의 변하지 않는다 — 앵커가 8개나 있으니까', en: 'Hardly anything — there are eight anchors after all' } },
           ]}
           explain={{
-            ko: `**수직(z)** 입니다. 지금 강당 크기로 계산하면, 강당 중앙에서 TDoA 의 수직 배수 VDOP 는 높이를 섞은 배치에서 ${fmt(tM.vdop, 3)}{{der:ch2#gdop}} 이던 것이 같은 높이 배치에서 ${fmt(tS.vdop, 3)}{{der:ch2#gdop}} 로 커집니다. 수평 배수 HDOP 는 ${fmt(tM.hdop, 3)}{{der:ch2#gdop}} → ${fmt(tS.hdop, 3)}{{der:ch2#gdop}} 로 거의 그대로입니다. 앵커 개수가 아니라 **방향이 얼마나 다양한가**가 중요합니다. 한 가지 더: TWR 이라면 결과가 다릅니다(${fmt(wM.vdop, 3)}{{der:ch2#gdop}} → ${fmt(wS.vdop, 3)}{{der:ch2#gdop}}). 왜 모드에 따라 다른지가 이 절의 핵심입니다.`,
-            en: `**Vertical (z).** For the current hall size, the vertical factor VDOP of TDoA at the hall centre grows from ${fmt(tM.vdop, 3)}{{der:ch2#gdop}} with mixed heights to ${fmt(tS.vdop, 3)}{{der:ch2#gdop}} with one height. The horizontal factor HDOP hardly moves: ${fmt(tM.hdop, 3)}{{der:ch2#gdop}} → ${fmt(tS.hdop, 3)}{{der:ch2#gdop}}. What matters is not the number of anchors but **how diverse their directions are**. One more thing: with TWR the outcome is different (${fmt(wM.vdop, 3)}{{der:ch2#gdop}} → ${fmt(wS.vdop, 3)}{{der:ch2#gdop}}). Why it depends on the mode is the heart of this section.`,
+            ko: `**수직(z)** 입니다. 지금 강당 크기로 계산하면, 강당 중앙에서 TDoA 의 수직 배수 VDOP 는 높이를 섞은 배치에서 ${fmt(tM.vdop, 3)}{{der:ch2#gdop}} 이던 것이 같은 높이 배치에서 ${fmt(tS.vdop, 3)}{{der:ch2#gdop}} 로 커집니다. 수평 배수 HDOP 는 ${fmt(tM.hdop, 3)}{{der:ch2#gdop}} → ${fmt(tS.hdop, 3)}{{der:ch2#gdop}} 로 거의 그대로입니다. 앵커 개수가 아니라 **방향이 얼마나 다양한가**가 중요합니다. 한 가지 더: TWR 이라면 결과가 다릅니다. VDOP 가 오히려 ${fmt(wM.vdop, 3)}{{der:ch2#gdop}} → ${fmt(wS.vdop, 3)}{{der:ch2#gdop}} 로 좋아집니다. 높이를 섞은 배치에서는 앵커 절반이 비행 고도와 가까운 ${fmt(zLo)} m{{ex}} 에 있어 그 앵커들이 높이를 거의 알려 주지 못하지만, 같은 높이 배치에서는 8개 모두가 ${fmt(zSame - hF)} m{{der:ch2#gdop|앵커 높이 − 비행 고도|anchor height − flight height}} 위에서 내려다보기 때문입니다. 대신 앵커 평면에 대한 거울상을 구별하지 못하고, 앵커 높이 근처를 날면 무너집니다(함정 실험실). 그리고 이 비교의 같은 높이 배치는 높이만 바꾼 것이 아니라 앵커를 모서리 4곳과 벽 중간 4곳에 둔 배치라서, 수평 배치가 달라진 효과도 조금 섞여 있습니다. 왜 모드에 따라 다른지가 이 절의 핵심입니다.`,
+            en: `**Vertical (z).** For the current hall size, the vertical factor VDOP of TDoA at the hall centre grows from ${fmt(tM.vdop, 3)}{{der:ch2#gdop}} with mixed heights to ${fmt(tS.vdop, 3)}{{der:ch2#gdop}} with one height. The horizontal factor HDOP hardly moves: ${fmt(tM.hdop, 3)}{{der:ch2#gdop}} → ${fmt(tS.hdop, 3)}{{der:ch2#gdop}}. What matters is not the number of anchors but **how diverse their directions are**. One more thing: with TWR the outcome is different — VDOP actually improves, ${fmt(wM.vdop, 3)}{{der:ch2#gdop}} → ${fmt(wS.vdop, 3)}{{der:ch2#gdop}}. In the mixed layout half of the anchors sit at ${fmt(zLo)} m{{ex}}, close to the flight height, and tell little about height, whereas in the same-height layout all eight look down from ${fmt(zSame - hF)} m{{der:ch2#gdop|앵커 높이 − 비행 고도|anchor height − flight height}} above. The price: the mirror image about the anchor plane cannot be told apart, and flying near the anchor height breaks down (pitfall lab). Also, the same-height layout of this comparison does not just change heights: it puts the anchors in the four corners and at the four wall midpoints, so some effect of the different horizontal layout is mixed in. Why it depends on the mode is the heart of this section.`,
           }} />
         <Derivation id="gdop" title={{ ko: '최소제곱 추정의 공분산에서 DOP 까지', en: 'From the covariance of the least-squares estimate to DOP' }}>
-          <P ko="가우스-뉴턴이 다 모였을 때 추정 $\hat x$ 가 참 위치 $p$ 에서 얼마나 떨어져 있는지 계산합니다. 참 위치에서의 잔차는 $r_i(p) = \norm{p - a_i} - \rho_i = -n_i$, 곧 잡음 그 자체입니다. 잡음이 작아서 $p$ 근처에서 1차 근사가 맞는다고 하면, 가우스-뉴턴의 한 걸음이 곧 오차입니다."
-            en="We compute how far the converged Gauss–Newton estimate $\hat x$ is from the true position $p$. At the true position the residual is $r_i(p) = \norm{p - a_i} - \rho_i = -n_i$: the noise itself. If the noise is small enough for the linear approximation to hold near $p$, one Gauss–Newton step is exactly the error." />
-          <M block tex={String.raw`\hat x - p \;\approx\; -(H\T H)^{-1} H\T\, r(p) \;=\; (H\T H)^{-1} H\T\, n`} />
-          <P ko="$H$ 는 참 위치에서 계산한 야코비안이고 **기하행렬**(geometry matrix)이라고 부릅니다. 앵커와 태그의 위치만으로 정해집니다. 잡음들이 서로 독립이고 평균 0, 표준편차 $\sigma$ 라고 하면 $\mathrm{E}[n n\T] = \sigma^2 I$ 입니다. 오차의 **공분산**(covariance, 대각 성분이 각 축 오차의 분산인 행렬)은"
-            en="$H$ is the Jacobian evaluated at the true position, called the **geometry matrix**; it depends only on the anchor and tag positions. With independent zero-mean noise of standard deviation $\sigma$, $\mathrm{E}[n n\T] = \sigma^2 I$. The **covariance** of the error (the matrix whose diagonal holds the variance of the error along each axis) is" />
-          <M block tex={String.raw`\mathrm{Cov}(\hat x) = (H\T H)^{-1} H\T \big(\sigma^2 I\big) H\, (H\T H)^{-1} = \sigma^2\,(H\T H)^{-1} \;\equiv\; \sigma^2\, Q`} />
+          <P ko="가우스-뉴턴이 **수렴한 뒤**의 추정 $\hat x$ 가 참 위치 $p$ 에서 얼마나 떨어져 있는지 계산합니다. 잡음들을 벡터 $n = (n_1, \dots, n_N)$ 으로 모읍니다. 참 위치에서의 잔차는 $r_i(p) = \norm{p - a_i} - \rho_i = -n_i$, 곧 잡음 그 자체입니다. 잡음이 작아서 $p$ 근처에서 1차 근사가 맞는다고 하면, 참 위치에서 출발한 가우스-뉴턴의 한 걸음이 곧 오차입니다."
+            en="We compute how far the estimate $\hat x$ is from the true position $p$ **after Gauss–Newton has converged**. Collect the noises into a vector $n = (n_1, \dots, n_N)$. At the true position the residual is $r_i(p) = \norm{p - a_i} - \rho_i = -n_i$: the noise itself. If the noise is small enough for the linear approximation to hold near $p$, one Gauss–Newton step taken from the true position is exactly the error." />
+          <M block tex={String.raw`\varepsilon \;=\; \hat x - p \;\approx\; -(H\T H)^{-1} H\T\, r(p) \;=\; \underbrace{(H\T H)^{-1} H\T}_{A}\; n \;=\; A\,n`} />
+          <P ko="$H$ 는 참 위치에서 계산한 야코비안이고 **기하행렬**(geometry matrix)이라고 부릅니다. 앵커와 태그의 위치만으로 정해지므로 $A$ 도 상수 행렬입니다. 오차 벡터를 $\varepsilon = (\varepsilon_x, \varepsilon_y, \varepsilon_z)$ 로 씁니다(단위벡터 $e_i$ 와 헷갈리지 않게 다른 글자를 씁니다). 이 오차가 얼마나 퍼지는지를 세 단계로 셉니다."
+            en="$H$ is the Jacobian evaluated at the true position, called the **geometry matrix**; it depends only on the anchor and tag positions, so $A$ is a constant matrix too. Write the error vector as $\varepsilon = (\varepsilon_x, \varepsilon_y, \varepsilon_z)$ (a different letter, so as not to confuse it with the unit vectors $e_i$). We work out how widely it spreads in three steps." />
+          <List items={[
+            { ko: '**① 기대값.** $\\mathrm{E}[\\cdot]$ 는 같은 측정을 아주 여러 번 되풀이했을 때의 평균입니다([통계 1분 복습](#/ch/0?a=stats)). 잡음들이 서로 독립이고 평균 0, 표준편차 $\\sigma$ 이면 $\\mathrm{E}[n_i^2] = \\sigma^2$, $i \\ne j$ 일 때 $\\mathrm{E}[n_i n_j] = 0$ 입니다. $(i, j)$ 성분이 $n_i n_j$ 인 $N \\times N$ 행렬 $n n\\T$ 로 모아 쓰면 $\\mathrm{E}[n n\\T] = \\sigma^2 I$ 입니다.', en: '**① Expectation.** $\\mathrm{E}[\\cdot]$ is the average over a very large number of repetitions of the same measurement ([one-minute statistics review](#/ch/0?a=stats)). With independent zero-mean noises of standard deviation $\\sigma$, $\\mathrm{E}[n_i^2] = \\sigma^2$ and $\\mathrm{E}[n_i n_j] = 0$ for $i \\ne j$. Collected in the $N \\times N$ matrix $n n\\T$, whose $(i, j)$ entry is $n_i n_j$, this reads $\\mathrm{E}[n n\\T] = \\sigma^2 I$.' },
+            { ko: '**② 공분산.** 오차의 **공분산**(covariance)은 $\\mathrm{Cov}(\\hat x) = \\mathrm{E}[\\varepsilon\\varepsilon\\T]$ 로 정의합니다. 대각 성분이 각 축 오차의 분산($\\mathrm{E}[\\varepsilon_x^2]$ 등)입니다. $\\varepsilon = A n$ 이면 $\\varepsilon\\varepsilon\\T = A\\,n n\\T A\\T$ 이고, 상수 행렬 $A$ 는 평균 밖으로 꺼낼 수 있으므로 $\\mathrm{E}[\\varepsilon\\varepsilon\\T] = A\\,\\mathrm{E}[n n\\T]\\,A\\T = \\sigma^2 A A\\T$ 입니다.', en: '**② Covariance.** The **covariance** of the error is defined as $\\mathrm{Cov}(\\hat x) = \\mathrm{E}[\\varepsilon\\varepsilon\\T]$; its diagonal holds the variance of the error along each axis ($\\mathrm{E}[\\varepsilon_x^2]$ and so on). With $\\varepsilon = A n$ we have $\\varepsilon\\varepsilon\\T = A\\,n n\\T A\\T$, and the constant matrix $A$ can be taken outside the average: $\\mathrm{E}[\\varepsilon\\varepsilon\\T] = A\\,\\mathrm{E}[n n\\T]\\,A\\T = \\sigma^2 A A\\T$.' },
+            { ko: '**③ 정리.** $H\\T H$ 는 대칭이라 그 역행렬도 대칭이므로 $A\\T = H (H\\T H)^{-1}$ 입니다. 따라서 $A A\\T = (H\\T H)^{-1} (H\\T H) (H\\T H)^{-1} = (H\\T H)^{-1}$.', en: '**③ Simplify.** $H\\T H$ is symmetric, so is its inverse, hence $A\\T = H (H\\T H)^{-1}$ and $A A\\T = (H\\T H)^{-1} (H\\T H) (H\\T H)^{-1} = (H\\T H)^{-1}$.' },
+          ]} />
+          <M block tex={String.raw`\mathrm{Cov}(\hat x) = \sigma^2 A A\T = \sigma^2\,(H\T H)^{-1} H\T H\, (H\T H)^{-1} = \sigma^2\,(H\T H)^{-1} \;\equiv\; \sigma^2\, Q`} />
           <P ko="$\sigma$ 는 측정의 품질, $Q = (H\T H)^{-1}$ 는 기하의 품질입니다. 둘이 곱으로 깔끔하게 나뉩니다. $Q$ 의 대각 성분에서 DOP 를 정의합니다."
             en="$\sigma$ is the quality of the measurement, $Q = (H\T H)^{-1}$ the quality of the geometry; they separate neatly as a product. The DOPs are defined from the diagonal of $Q$." />
           <M block tex={String.raw`\mathrm{HDOP} = \sqrt{Q_{xx} + Q_{yy}}, \qquad \mathrm{VDOP} = \sqrt{Q_{zz}}, \qquad \mathrm{PDOP} = \sqrt{Q_{xx} + Q_{yy} + Q_{zz}}`} />
-          <M block tex={String.raw`\sigma_{\text{pos}} \;\approx\; \mathrm{DOP} \times \sigma_{\text{meas}}`} />
-          <P ko="예를 들어 수평 오차의 RMS(제곱평균의 제곱근)는 $\sqrt{\mathrm{E}[e_x^2 + e_y^2]} = \mathrm{HDOP}\cdot\sigma$, 수직 오차의 표준편차는 $\mathrm{VDOP}\cdot\sigma$ 입니다. DOP 는 단위가 없는 배수이고, 1 근처면 ‘위치 오차 ≈ 측정 오차’입니다. 이 교재(엔진)가 쓰는 규약은 다음과 같습니다."
-            en="For example the RMS of the horizontal error is $\sqrt{\mathrm{E}[e_x^2 + e_y^2]} = \mathrm{HDOP}\cdot\sigma$ and the standard deviation of the vertical error is $\mathrm{VDOP}\cdot\sigma$. DOP is a unitless factor; near 1 means ‘position error ≈ measurement error’. The conventions used by this textbook (and its engine) are:" />
+          <M block tex={String.raw`\sigma_{\text{pos}} \;\approx\; \mathrm{DOP} \times \sigma`} />
+          <P ko="여기서 $\sigma$ 는 측정 하나의 노이즈입니다(TWR 이면 거리 노이즈, TDoA 이면 거리 차 노이즈. 1장에서 오차 예산의 첫 칸으로 본 $\sigma_r$ 과 같은 것). 예를 들어 수평 오차의 RMS(제곱평균의 제곱근)는 $\sqrt{\mathrm{E}[\varepsilon_x^2 + \varepsilon_y^2]} = \mathrm{HDOP}\cdot\sigma$, 수직 오차의 표준편차는 $\mathrm{VDOP}\cdot\sigma$ 입니다. DOP 는 단위가 없는 배수이고, 1 근처면 ‘위치 오차 ≈ 측정 오차’입니다. 이 교재(엔진)가 쓰는 규약은 다음과 같습니다."
+            en="Here $\sigma$ is the noise of one measurement (the range noise for TWR, the range-difference noise for TDoA — the same $\sigma_r$ that chapter 1 put into the first blank of the error budget). For example the RMS of the horizontal error is $\sqrt{\mathrm{E}[\varepsilon_x^2 + \varepsilon_y^2]} = \mathrm{HDOP}\cdot\sigma$ and the standard deviation of the vertical error is $\mathrm{VDOP}\cdot\sigma$. DOP is a unitless factor; near 1 means ‘position error ≈ measurement error’. The conventions used by this textbook (and its engine) are:" />
           <List items={[
-            { ko: '**TWR**: $H$ 의 행은 단위벡터 $e_i$ (앵커마다 하나), $\\sigma$ 는 거리 노이즈 {{cfg:uwb.sigmaTwr}}. 시계 미지수가 없으므로 미지수는 위치 3개뿐이고, 흔히 말하는 GDOP 가 PDOP 와 같습니다.', en: '**TWR**: the rows of $H$ are the unit vectors $e_i$ (one per anchor) and $\\sigma$ is the range noise {{cfg:uwb.sigmaTwr}}. There is no clock unknown, so the unknowns are just the three position components and the usual GDOP equals PDOP.' },
-            { ko: '**TDoA**: $H$ 의 행은 $e_j - e_i$ 이고, 쌍은 번호가 이웃한 앵커끼리(0–1, 1–2, …, 마지막–0) 고리 모양으로 묶습니다. 거리 차 하나하나에 독립인 노이즈 {{cfg:uwb.sigmaTdoa}} 가 섞인다고 가정합니다. (실제로는 앵커 하나를 공유하는 두 거리 차의 잡음이 서로 얽히지만, 이 교재는 단순한 모델을 씁니다.)', en: '**TDoA**: the rows of $H$ are $e_j - e_i$, with pairs formed between consecutively numbered anchors (0–1, 1–2, …, last–0) in a ring. Each range difference is assumed to carry independent noise {{cfg:uwb.sigmaTdoa}}. (In reality two differences sharing an anchor have correlated noise; this textbook uses the simple model.)' },
+            { ko: '**TWR**: $H$ 의 행은 단위벡터 $e_i$ (앵커마다 하나), $\\sigma$ 는 거리 노이즈 {{cfg:uwb.sigmaTwr}}. 시계 미지수가 없으므로 미지수는 위치 3개뿐이고, 흔히 말하는 **GDOP**(geometric DOP: 위치에 시계 미지수까지 포함한 전체 배수, 아래 참고)가 PDOP 와 같습니다.', en: '**TWR**: the rows of $H$ are the unit vectors $e_i$ (one per anchor) and $\\sigma$ is the range noise {{cfg:uwb.sigmaTwr}}. There is no clock unknown, so the unknowns are just the three position components and the usual **GDOP** (geometric DOP: the overall factor including a clock unknown besides the position, see the remark below) equals PDOP.' },
+            { ko: '**TDoA**: $H$ 의 행은 $e_j - e_i$ 이고, 쌍은 번호가 이웃한 앵커끼리(0–1, 1–2, …, 마지막–0) 고리 모양으로 묶습니다. 거리 차 하나하나에 독립인 노이즈 {{cfg:uwb.sigmaTdoa}} 가 섞인다고 가정합니다. 앞 절에서 독립인 거리 차는 $N - 1$ 개뿐이라고 했는데 고리는 $N$ 개를 씁니다. 잡음이 없으면 고리의 마지막 차는 나머지의 합(부호 반대)으로 정해지므로 위치를 정하는 식은 여전히 $N - 1$ 개입니다. 하지만 실제로는 쌍마다 따로 측정해 잡음이 제각각이므로, 이 교재는 $N$ 개를 모두 서로 다른 측정으로 넣습니다. (엄밀히는 앵커 하나를 공유하는 두 거리 차의 잡음이 서로 얽힙니다. 이 단순화는 수평 DOP 에는 거의 영향이 없지만 수직 DOP 를 낙관적으로 보이게 합니다. 기본 배치의 강당 중앙에서, 도달 시각마다 독립인 잡음을 두고 같은 고리 쌍을 풀면 VDOP 가 약 30 %{{der:ch2#gdop|도달 시각마다 표준편차 σ/√2 인 독립 잡음을 두면 이웃한 쌍의 공분산이 −σ²/2. 이것으로 같은 최소제곱의 공분산 A·Σ·Aᵀ 를 계산해 비교 (기본 설정: VDOP 0.846 → 1.09)|Arrival-time noise of std σ/√2 per anchor makes neighbouring pairs correlate by −σ²/2; the covariance A·Σ·Aᵀ of the same least squares compared (default settings: VDOP 0.846 → 1.09)}} 커집니다.)', en: '**TDoA**: the rows of $H$ are $e_j - e_i$, with pairs formed between consecutively numbered anchors (0–1, 1–2, …, last–0) in a ring. Each range difference is assumed to carry independent noise {{cfg:uwb.sigmaTdoa}}. The previous section said only $N - 1$ range differences are independent, yet the ring uses $N$. Without noise the last difference of the ring is fixed by the others (minus their sum), so the equations that fix the position are still $N - 1$. In practice, though, every pair is measured separately with its own noise, so this textbook enters all $N$ as distinct measurements. (Strictly, two differences sharing an anchor have correlated noise. The simplification hardly affects the horizontal DOP but makes the vertical DOP look optimistic: at the hall centre of the default layout, giving every arrival time independent noise and solving the same ring pairs makes VDOP about 30 %{{der:ch2#gdop|도달 시각마다 표준편차 σ/√2 인 독립 잡음을 두면 이웃한 쌍의 공분산이 −σ²/2. 이것으로 같은 최소제곱의 공분산 A·Σ·Aᵀ 를 계산해 비교 (기본 설정: VDOP 0.846 → 1.09)|Arrival-time noise of std σ/√2 per anchor makes neighbouring pairs correlate by −σ²/2; the covariance A·Σ·Aᵀ of the same least squares compared (default settings: VDOP 0.846 → 1.09)}} larger.)' },
             { ko: '참고: GPS 교과서의 GDOP 는 행을 $[e_i\\T,\\ 1]$ 로 놓고 수신기 시계의 어긋남까지 미지수 4개로 풉니다. 그때는 GDOP 에 시간 항이 더해져 PDOP 보다 큽니다. 엔진에는 이 형태도 `dopPseudorange` 로 들어 있지만 본문에서는 쓰지 않습니다.', en: 'Remark: the GDOP of GPS textbooks uses rows $[e_i\\T,\\ 1]$ and solves four unknowns including the receiver clock offset; GDOP then contains a time term and exceeds PDOP. The engine also has this form as `dopPseudorange`, but the text does not use it.' },
           ]} />
           <P ko="**앵커가 같은 높이면 왜 z 가 나빠지나.** $Q_{zz}$ 를 정하는 것은 $H$ 의 z 열, 곧 각 행의 z 성분입니다. 이 열이 0 에 가까우면 ‘태그가 위아래로 움직여도 측정이 변하지 않는다’는 뜻이고, 그 방향은 알 수 없게 됩니다. 앵커가 모두 높이 $z_a$ 에 있고 태그의 높이가 $z$ 일 때 두 모드의 z 성분을 적어 보면"
             en="**Why the same height hurts z.** $Q_{zz}$ is governed by the z column of $H$, the z component of each row. If that column is near zero, ‘moving the tag up or down does not change the measurements’, and that direction becomes unknowable. With all anchors at height $z_a$ and the tag at height $z$, the z components in the two modes are" />
-          <M block tex={String.raw`\tx{TWR 의 행}{TWR row}:\;\; h_{iz} = \frac{z - z_a}{d_i}, \qquad\qquad \tx{TDoA 의 행}{TDoA row}:\;\; h_{kz} = \frac{z - z_a}{d_j} - \frac{z - z_a}{d_i} = (z - z_a)\Big(\frac{1}{d_j} - \frac{1}{d_i}\Big)`} />
+          <M block tex={String.raw`\tx{TWR 의 행}{TWR row}:\;\; h_{iz} = \frac{z - z_a}{d_i}`} />
+          <M block tex={String.raw`\tx{TDoA 의 행}{TDoA row}:\;\; h_{kz} = \frac{z - z_a}{d_j} - \frac{z - z_a}{d_i} = (z - z_a)\Big(\frac{1}{d_j} - \frac{1}{d_i}\Big)`} />
           <List items={[
             { ko: '**TWR**: 태그가 앵커 평면보다 한참 아래면 $|z - z_a|$ 가 커서 z 성분이 모두 큽니다. 수직 정확도는 괜찮습니다. 하지만 비행 고도가 앵커 높이에 가까워지면 $z - z_a \\to 0$ 이라 z 열 전체가 0 으로 가고 VDOP 가 끝없이 커집니다. 그리고 $(z - z_a)$ 의 부호를 뒤집어도 거리가 같으므로 거울상을 구별하지 못합니다.', en: '**TWR**: when the tag is far below the anchor plane, $|z - z_a|$ is large and so are all z components; vertical accuracy is fine. But as the flight height approaches the anchor height, $z - z_a \\to 0$, the whole z column goes to zero and VDOP grows without bound. And flipping the sign of $(z - z_a)$ leaves the ranges unchanged, so the mirror image cannot be told apart.' },
             { ko: '**TDoA**: 괄호 안이 두 거리의 역수의 **차**입니다. 두 앵커가 태그에서 비슷한 거리에 있으면 거의 0 이 됩니다. 태그가 어디에 있든 z 열이 작으므로, 수직 정확도는 **거의 모든 곳에서** 나쁩니다. 앞 절의 말로 하면, 태그가 위로 조금 올라가면 모든 앵커까지의 거리가 거의 똑같이 줄어드는데, 모든 거리에 공통인 변화는 TDoA 가 보지 못하기 때문입니다.', en: '**TDoA**: the bracket is a **difference** of two inverse distances. If the two anchors are at similar distances from the tag it is almost zero. The z column is small wherever the tag is, so vertical accuracy is poor **almost everywhere**. In the words of the previous section: when the tag rises a little, the distances to all anchors shrink by nearly the same amount, and a change common to all distances is invisible to TDoA.' },
             { ko: '**높이를 섞으면**: 어떤 앵커는 태그보다 위에, 어떤 앵커는 아래에 있어 z 성분의 부호가 섞입니다. 빼도 크게 남으므로 두 모드 모두 z 열이 살아납니다.', en: '**With mixed heights**: some anchors are above the tag and some below, so the z components have mixed signs. Their differences stay large and the z column is alive in both modes.' },
           ]} />
+          <P ko="**덤: 수렴한 뒤 남는 잔차.** 가우스-뉴턴 데모의 이론선도 같은 1차 근사로 나옵니다. 수렴점의 잔차는 $r(\hat x) \approx r(p) + H\varepsilon = -n + HAn = -P\,n$ 이고, 여기서 $P = I - HA$ 입니다. $HA = H(H\T H)^{-1}H\T$ 는 대칭이고 $(HA)^2 = HA$ 이므로 $P\T P = P$ 입니다. 그러면 $\norm{r}^2 = n\T P n = \sum_{i,j} P_{ij} n_i n_j$ 이고, ①에 따라 $i \ne j$ 항의 평균은 0 이라 $\mathrm{E}[\norm{r}^2] = \sigma^2 \sum_i P_{ii}$ 입니다. 대각합(trace)은 $\mathrm{tr}(XY) = \mathrm{tr}(YX)$ 이므로 $\mathrm{tr}(HA) = \mathrm{tr}(AH) = \mathrm{tr}(I_d) = d$ 이고($d$ = 미지수 개수),"
+            en="**Bonus: the residual left after convergence.** The theory line of the Gauss–Newton demo follows from the same linear approximation. At the converged point the residual is $r(\hat x) \approx r(p) + H\varepsilon = -n + HAn = -P\,n$ with $P = I - HA$. $HA = H(H\T H)^{-1}H\T$ is symmetric and $(HA)^2 = HA$, so $P\T P = P$. Then $\norm{r}^2 = n\T P n = \sum_{i,j} P_{ij} n_i n_j$, and by ① the terms with $i \ne j$ average to 0, so $\mathrm{E}[\norm{r}^2] = \sigma^2 \sum_i P_{ii}$. Since the trace satisfies $\mathrm{tr}(XY) = \mathrm{tr}(YX)$, $\mathrm{tr}(HA) = \mathrm{tr}(AH) = \mathrm{tr}(I_d) = d$ ($d$ = number of unknowns), and" />
+          <M block tex={String.raw`\mathrm{E}\Big[\sum_{i=1}^{N} r_i^2\Big] = \sigma^2\,\mathrm{tr}(I - HA) = (N - d)\,\sigma^2`} />
+          <M block tex={String.raw`\Longrightarrow\quad \mathrm{E}\big[(\tx{잔차 RMS}{residual RMS})^2\big] = \frac{1}{N}\,\mathrm{E}\Big[\sum_i r_i^2\Big] = \sigma^2\,\frac{N - d}{N}`} />
+          <P ko="평면 데모에서는 $d = 2$ 이므로 이론선이 $\sigma\sqrt{(n-2)/n}$ 입니다. 직관으로는, 미지수 하나를 맞출 때마다 잡음의 한 방향 몫($\sigma^2$)이 잔차에서 빠져 위치 쪽으로 옮겨 간다는 뜻입니다."
+            en="In the planar demo $d = 2$, hence the theory line $\sigma\sqrt{(n-2)/n}$. Intuitively, each fitted unknown takes one direction's share ($\sigma^2$) of the noise out of the residual and moves it into the position." />
         </Derivation>
         <DopDemo />
         <Note>
-          <P ko="**DOP 가 전부는 아닙니다.** DOP 는 ‘모든 측정의 잡음이 같고 편향이 없다’고 가정한 지표입니다. UWB TDoA 의 앵커 배치를 다룬 최근 연구는 GDOP 를 GPS 분야의 고전적 지표로 소개하면서{{lit:arxiv-2412-12427/gdop-mention}}, 대신 편향까지 포함한 평균제곱오차의 하한을 배치의 점수로 씁니다{{lit:arxiv-2412-12427/placement-metric}}. 그 연구의 실험에서는 같은 공간에서 앵커 배치만 바꿨을 때 평균 RMSE 가 21 cm 와 16 cm{{lit:arxiv-2412-12427/placement-effect}} 로 달라졌습니다. 숫자는 그 실험 환경의 값이지만, **배치만으로 정확도가 달라진다**는 점은 이 장의 계산과 같은 이야기입니다. 벽에 가려 생기는 편향(NLOS)은 4장에서 다룹니다."
-            en="**DOP is not the whole story.** DOP assumes ‘every measurement has the same noise and no bias’. A recent study of anchor placement for UWB TDoA introduces GDOP as the classical metric of the GPS field{{lit:arxiv-2412-12427/gdop-mention}} and instead scores a layout by a lower bound on the mean squared error that includes bias{{lit:arxiv-2412-12427/placement-metric}}. In its experiments, changing only the anchor placement in the same space changed the average RMSE between 21 cm and 16 cm{{lit:arxiv-2412-12427/placement-effect}}. The numbers belong to that test environment, but the message — **placement alone changes accuracy** — is the one computed in this chapter. Bias from blocked paths (NLOS) is the subject of chapter 4." />
+          <P ko="**DOP 가 전부는 아닙니다.** DOP 는 ‘모든 측정의 잡음이 같고 편향이 없다’고 가정한 지표입니다. UWB TDoA 의 앵커 배치를 다룬 최근 연구(드론이 아니라 보행자가 든 UWB + 관성센서 태그를 대상으로 한 연구)는 GDOP 를 GPS 분야의 고전적 지표로 소개하면서{{lit:arxiv-2412-12427/gdop-mention}}, 대신 편향까지 포함한 평균제곱오차의 하한을 배치의 점수로 씁니다{{lit:arxiv-2412-12427/placement-metric}}. 그 연구의 실험에서는 같은 공간에서 앵커 배치만 바꿨을 때 평균 RMSE(오차의 RMS)가 21 cm 와 16 cm{{lit:arxiv-2412-12427/placement-effect}} 로 달라졌습니다. 숫자는 그 실험 환경의 값이지만, **배치만으로 정확도가 달라진다**는 점은 이 장의 계산과 같은 이야기입니다. 벽에 가려 생기는 편향(NLOS)은 4장에서 다룹니다."
+            en="**DOP is not the whole story.** DOP assumes ‘every measurement has the same noise and no bias’. A recent study of anchor placement for UWB TDoA (for a hand-held UWB + inertial tag carried by a pedestrian, not a drone) introduces GDOP as the classical metric of the GPS field{{lit:arxiv-2412-12427/gdop-mention}} and instead scores a layout by a lower bound on the mean squared error that includes bias{{lit:arxiv-2412-12427/placement-metric}}. In its experiments, changing only the anchor placement in the same space changed the average RMSE (the RMS of the error) between 21 cm and 16 cm{{lit:arxiv-2412-12427/placement-effect}}. The numbers belong to that test environment, but the message — **placement alone changes accuracy** — is the one computed in this chapter. Bias from blocked paths (NLOS) is the subject of chapter 4." />
         </Note>
       </Section>
 
@@ -712,8 +744,8 @@ function Body() {
         <P ko="이 장의 계산과 Bitcraze 의 설치 안내를 함께 놓으면 앵커를 다는 규칙이 됩니다."
           en="Putting this chapter's calculations next to the Bitcraze installation guidance gives rules for mounting the anchors." />
         <List items={[
-          { ko: '**비행 공간을 앵커로 감싼다.** TDoA 2 는 비행 공간의 모서리에 앵커 8개를 둘 때 가장 잘 동작합니다{{lit:lps-docs/tdoa2-convex-hull}}. TDoA 2 의 앵커 수는 8개로 제한됩니다{{lit:lps-docs/tdoa2-max-anchors}}. 공개 TDoA 데이터셋 UTIL 도 배치마다 앵커 8개{{lit:util2022/num-anchors}}를 썼습니다.', en: '**Enclose the flight volume with anchors.** TDoA 2 works best with 8 anchors in the corners of the flight volume{{lit:lps-docs/tdoa2-convex-hull}}. TDoA 2 is limited to 8 anchors{{lit:lps-docs/tdoa2-max-anchors}}. The public TDoA dataset UTIL also used 8 anchors per constellation{{lit:util2022/num-anchors}}.' },
-          { ko: '**높이를 섞는다.** 앵커는 벽과 천장에서 15 cm 이상 띄우고, 서로 2 m 이상 떨어뜨려 서로 다른 높이에 답니다{{lit:lps-docs/anchor-placement}}. ‘서로 다른 높이’가 왜 필요한지는 위 유도와 함정 실험실에서 보았습니다.', en: '**Mix the heights.** Keep anchors at least 15 cm from walls and ceiling, at least 2 m from each other, and at different heights{{lit:lps-docs/anchor-placement}}. Why ‘different heights’ matters is what the derivation and the pitfall lab showed.' },
+          { ko: '**비행 공간을 앵커로 감싼다.** **TDoA 2**(LPS 가 제공하는 TDoA 방식의 한 버전)는 비행 공간의 모서리에 앵커 8개를 둘 때 가장 잘 동작합니다{{lit:lps-docs/tdoa2-convex-hull}}. TDoA 2 의 앵커 수는 8개로 제한됩니다{{lit:lps-docs/tdoa2-max-anchors}}. 공개 TDoA 데이터셋 UTIL 도 배치마다 앵커 8개{{lit:util2022/num-anchors}}를 썼습니다.', en: '**Enclose the flight volume with anchors.** **TDoA 2** (one version of the TDoA scheme offered by the LPS) works best with 8 anchors in the corners of the flight volume{{lit:lps-docs/tdoa2-convex-hull}}. TDoA 2 is limited to 8 anchors{{lit:lps-docs/tdoa2-max-anchors}}. The public TDoA dataset UTIL also used 8 anchors per constellation{{lit:util2022/num-anchors}}.' },
+          { ko: '**높이를 섞는다.** 앵커는 벽과 천장에서 15 cm 이상 띄우고, (기준 배치를 따르지 않는 경우) 서로 2 m 이상 떨어뜨려 서로 다른 높이에 답니다{{lit:lps-docs/anchor-placement}}. ‘서로 다른 높이’가 왜 필요한지는 위 유도와 함정 실험실에서 보았습니다.', en: '**Mix the heights.** Keep anchors at least 15 cm from walls and ceiling and, when not following the reference layout, at least 2 m from each other and at different heights{{lit:lps-docs/anchor-placement}}. Why ‘different heights’ matters is what the derivation and the pitfall lab showed.' },
           { ko: '**기대 수준을 안다.** LPS 의 정확도는 ‘10 cm 수준’이고 설치와 환경에 따라 달라진다고 안내되어 있습니다{{lit:lps-docs/accuracy}}. DOP 는 그 ‘설치에 따라’를 미리 계산해 보는 도구입니다.', en: '**Know what to expect.** The LPS accuracy is described as being ‘in the 10 cm range’, depending on setup and environment{{lit:lps-docs/accuracy}}. DOP is the tool for computing that ‘depending on setup’ in advance.' },
         ]} />
         <P ko="아래는 지금 전역 설정의 값입니다. 이 교재의 기본 배치는 계산을 단순하게 하려고 앵커를 강당 모서리의 좌표에 그대로 두었습니다. 실제로는 벽에서 띄워 달고, 단 뒤에 **실제로 잰 좌표**를 설정에 넣어야 합니다(좌표가 틀리면 어떻게 되는지는 6장)."
@@ -723,6 +755,7 @@ function Body() {
           <Stat label={{ ko: '가장 가까운 두 앵커 사이 거리', en: 'Closest pair of anchors' }} value={minSep} unit="m" src={CFG_SRC} status={minSep < 2 ? 'warn' : 'good'} />
           <Stat label={{ ko: '앵커 높이의 범위 (최고 − 최저)', en: 'Anchor height spread (max − min)' }} value={spread} unit="m" src={CFG_SRC} status={spread < 1e-6 ? 'bad' : undefined} />
         </StatRow>
+        <Caption><T ko={'판정 기준: 두 앵커 사이 2 m 이상, 높이가 서로 다를 것{{lit:lps-docs/anchor-placement}}(기준 배치를 따르지 않는 경우). TDoA 2 에서 앵커 수는 8개 이하{{lit:lps-docs/tdoa2-max-anchors}}.'} en={'Criteria: at least 2 m between anchors and different heights{{lit:lps-docs/anchor-placement}} (when not following the reference layout). At most 8 anchors with TDoA 2{{lit:lps-docs/tdoa2-max-anchors}}.'} /></Caption>
         <div class="controls">
           <CfgSlider path="formation.height" min={0.3} max={Math.max(1, hall.z)} testId="ch2-apply-height" />
           <CfgSlider path={sigmaPath(mode)} max={50} testId="ch2-apply-sigma" />
@@ -745,7 +778,7 @@ const def: ChapterDef = {
   title: { ko: '거리에서 위치로', en: 'From ranges to position' },
   lead: { ko: '거리 여러 개를 위치 하나로 바꾸는 계산을 배우고, 같은 거리 오차가 앵커 배치에 따라 위치 오차로 얼마나 부풀려지는지를 DOP 로 계산합니다.', en: 'We learn the computation that turns several ranges into one position, and use DOP to compute how much the anchor layout inflates the same range error into position error.' },
   objectives: [
-    { ko: '거리(TWR)와 거리 차(TDoA)가 각각 구와 쌍곡면을 뜻함을 설명하고, 3D 위치에 앵커가 4개 이상 필요한 이유를 식으로 보인다.', en: 'Explain that ranges (TWR) and range differences (TDoA) mean spheres and hyperboloids, and show with equations why 3D positioning needs at least four anchors.' },
+    { ko: '거리(TWR)와 거리 차(TDoA)가 각각 구와 쌍곡면을 뜻함을 설명하고, 3D 위치에 앵커가 4개 이상{{der:ch2#trilateration|미지수 3개를 정하려면 독립인 1차식 3개가 필요|Three unknowns need three independent linear equations}} 필요한 이유를 식으로 보인다.', en: 'Explain that ranges (TWR) and range differences (TDoA) mean spheres and hyperboloids, and show with equations why 3D positioning needs at least four anchors{{der:ch2#trilateration|미지수 3개를 정하려면 독립인 1차식 3개가 필요|Three unknowns need three independent linear equations}}.' },
     { ko: '가우스-뉴턴 갱신 $\\Delta x = -(J\\T J)^{-1} J\\T r$ 을 유도하고 numpy 로 구현한다.', en: 'Derive the Gauss–Newton update $\\Delta x = -(J\\T J)^{-1} J\\T r$ and implement it in numpy.' },
     { ko: '앵커 배치에서 HDOP·VDOP 를 계산해 위치 오차를 예측하고, 같은 높이 배치와 앵커 공간 밖 비행이 왜 나쁜지 기하행렬로 설명한다.', en: 'Compute HDOP and VDOP from an anchor layout to predict position error, and explain with the geometry matrix why same-height layouts and flying outside the anchor volume are bad.' },
   ],
@@ -758,7 +791,7 @@ const def: ChapterDef = {
     },
   },
   summary: [
-    { ko: '거리 하나는 구, 거리 차 하나는 쌍곡면이다. 3D 위치에는 앵커가 4개 이상 필요하고, 잡음이 있으면 가우스-뉴턴 $\\Delta x = -(J\\T J)^{-1} J\\T r$ 로 잔차 제곱합을 줄인다. $J$ 의 행은 단위벡터(TDoA 는 그 차)다.', en: 'One range is a sphere, one range difference a hyperboloid. 3D positioning needs at least four anchors, and with noise Gauss–Newton, $\\Delta x = -(J\\T J)^{-1} J\\T r$, reduces the sum of squared residuals. The rows of $J$ are unit vectors (their differences for TDoA).' },
+    { ko: '거리 하나는 구, 거리 차 하나는 쌍곡면이다. 3D 위치에는 앵커가 4개 이상{{der:ch2#trilateration|미지수 3개를 정하려면 독립인 1차식 3개가 필요|Three unknowns need three independent linear equations}} 필요하고, 잡음이 있으면 가우스-뉴턴 $\\Delta x = -(J\\T J)^{-1} J\\T r$ 로 잔차 제곱합을 줄인다. $J$ 의 행은 단위벡터(TDoA 는 그 차)다.', en: 'One range is a sphere, one range difference a hyperboloid. 3D positioning needs at least four anchors{{der:ch2#trilateration|미지수 3개를 정하려면 독립인 1차식 3개가 필요|Three unknowns need three independent linear equations}}, and with noise Gauss–Newton, $\\Delta x = -(J\\T J)^{-1} J\\T r$, reduces the sum of squared residuals. The rows of $J$ are unit vectors (their differences for TDoA).' },
     { ko: '위치 오차 ≈ DOP × 측정 오차. DOP 는 $(H\\T H)^{-1}$ 의 대각 성분에서 나오고 앵커 배치와 태그 위치만으로 정해진다.', en: 'Position error ≈ DOP × measurement error. DOP comes from the diagonal of $(H\\T H)^{-1}$ and depends only on the anchor layout and the tag position.' },
     { ko: '앵커를 모두 같은 높이에 달면 TDoA 는 거의 모든 곳에서, TWR 은 앵커 높이 근처에서 z 가 나빠진다. TDoA 는 앵커가 둘러싼 공간 밖에서 빠르게 나빠진다.', en: 'With all anchors at one height, z degrades almost everywhere for TDoA and near the anchor height for TWR. TDoA degrades quickly outside the volume enclosed by the anchors.' },
   ],

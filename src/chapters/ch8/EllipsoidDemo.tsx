@@ -96,7 +96,8 @@ export function EllipsoidDemo() {
           { name: { ko: '기체 + 다운워시만 (비율 k_z)', en: 'Body + downwash only (ratio k_z)' }, x: angles, y: angles.map((d) => needAt((d * Math.PI) / 180, body, kz)), slot: 2, dash: '7 4' },
           ...(view === 'pair' ? [{ name: { ko: '지금 B 의 위치', en: 'Current position of B' }, x: [elev], y: [rho], slot: 3, points: true }] : []),
         ]}
-        yDomain={[0, Math.max(2.1, b.minSepV * 1.1)]} src={GEO} testId="ch8-need-chart" />
+        refLines={view === 'pair' ? [{ x: elev, slot: 3, label: { ko: '지금 B', en: 'B now' } }] : undefined}
+        xDomain={[-4, 92]} yDomain={[0, Math.max(2.1, b.minSepV * 1.1)]} src={GEO} testId="ch8-need-chart" />
       <Caption>{tr({
         ko: '점이 실선 위쪽에 있으면 안전합니다. 실선(예산 타원체)은 점선(기체와 다운워시만)보다 덜 길쭉합니다. 측위 오차와 지연 항은 k_z 배로 늘어나지 않고 수평·수직에 거의 같은 크기로 더해지기 때문입니다. 대형이 화면을 벗어나면 휠이나 − 키로 축소하세요.',
         en: 'A point above the solid line is safe. The solid line (budget ellipsoid) is less elongated than the dashed one (body and downwash only), because positioning error and delay terms are not stretched by k_z; they add nearly the same amount horizontally and vertically. If the formation leaves the view, zoom out with the wheel or the − key.',

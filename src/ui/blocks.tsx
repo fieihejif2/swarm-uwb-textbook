@@ -67,8 +67,8 @@ export function Stat({ label, value, unit, digits = 3, src, status }: { label: L
 }
 export const StatRow = (p: { children: ComponentChildren }) => <div class="stat-row">{p.children}</div>;
 
-export function Status({ kind, children }: { kind: 'good' | 'warn' | 'bad'; children: ComponentChildren }) {
-  return <span class={`status ${kind}`}>{kind === 'good' ? '✓' : kind === 'warn' ? '△' : '✕'} {children}</span>;
+export function Status({ kind, children }: { kind: 'good' | 'warn' | 'bad' | 'info'; children: ComponentChildren }) {
+  return <span class={`status ${kind}`}>{kind === 'good' ? '✓' : kind === 'warn' ? '△' : kind === 'bad' ? '✕' : 'ℹ'} {children}</span>;
 }
 
 export interface PredictChoice { label: L; correct?: boolean }

@@ -54,18 +54,18 @@ export function ExtrapolateDemo() {
           { name: { ko: '외삽: 시뮬레이션', en: 'Extrapolate: simulation' }, x: data.t, y: data.extS, slot: 2, dash: '12 4' },
         ]}
         refLines={[
-          { x: tCross * 1000, label: { ko: `교차점 2v/a = ${fmt(tCross * 1000, 3)} ms`, en: `Crossover 2v/a = ${fmt(tCross * 1000, 3)} ms` }, slot: 3 },
-          { x: b.ageMax * 1000, label: { ko: `지금 설정의 최대 정보 나이 ${fmt(b.ageMax * 1000, 3)} ms`, en: `Max. information age in the settings: ${fmt(b.ageMax * 1000, 3)} ms` } },
+          { x: tCross * 1000, label: { ko: `교차 2v/a = ${fmt(tCross * 1000, 3)} ms`, en: `Cross 2v/a = ${fmt(tCross * 1000, 3)} ms` }, slot: 3 },
+          { x: b.ageMax * 1000, label: { ko: `설정의 최대 나이 ${fmt(b.ageMax * 1000, 3)} ms`, en: `Max. age (settings) ${fmt(b.ageMax * 1000, 3)} ms` } },
         ]}
         yDomain={[0, Math.max(...data.holdB) * 1.05]} src={SRC} testId="ch8-extrap-chart" />
       <Caption>{tr({
-        ko: '실선은 항상 같은 색의 점선 아래에 있습니다(한계는 한계입니다). 나이가 짧을 때는 외삽이 훨씬 정확하고, 교차점을 지나면 외삽의 한계가 유지의 한계보다 커집니다.',
-        en: 'Each solid line stays below the dashed line of the same colour (a bound is a bound). At short ages extrapolation is far more accurate; past the crossover its bound exceeds the bound for hold.',
+        ko: '실선은 항상 같은 색의 점선 아래에 있습니다(한계는 한계입니다). 나이가 짧을 때는 외삽이 훨씬 정확하고, 교차점을 지나면 외삽의 한계가 유지의 한계보다 커집니다. 속력 슬라이더의 처음 값은 예산의 상대속도 가정 v_rel 이고, 아래 "우리 설정" 타일도 v_rel 과 a_max 를 씁니다. P2P 처럼 이웃 위치만 늦을 때는 v 에 이웃 속력의 상한을 넣어 보세요.',
+        en: 'Each solid line stays below the dashed line of the same colour (a bound is a bound). At short ages extrapolation is far more accurate; past the crossover its bound exceeds the bound for hold. The speed slider starts at the budget’s assumed relative speed v_rel, and the "our settings" tiles below also use v_rel and a_max. When only the neighbour’s position is late, as in P2P, try an upper bound on the neighbour’s speed for v.',
       })}</Caption>
       <h4 style={{ margin: '14px 0 6px' }}>{tr({ ko: '우리 설정에서는 어느 쪽이 유리한가', en: 'Which one pays off with our settings' })}</h4>
       <StatRow>
         <Stat label={{ ko: '교차점 $2v_{\\text{rel}}/a_{\\max}$', en: 'Crossover $2v_{\\text{rel}}/a_{\\max}$' }} value={tCfg * 1000} unit="ms" src={der('ch8#extrapolate')} />
-        <Stat label={{ ko: '예산이 대비하는 최대 정보 나이', en: 'Max. information age the budget plans for' }} value={b.ageMax * 1000} unit="ms" src={der('ch8#budget-sum', { ko: '통신 지연 + 지터 + 방송 주기 + 1000번에 1번 나오는 연속 손실 (7장)', en: 'Comm delay + jitter + broadcast period + the 1-in-1000 loss burst (ch. 7)' })} status={b.ageMax > tCfg ? 'warn' : 'good'} />
+        <Stat label={{ ko: '예산이 대비하는 최대 정보 나이', en: 'Max. information age the budget plans for' }} value={b.ageMax * 1000} unit="ms" src={der('ch8#extrapolate', { ko: 't_age = n(τ_c + J) + T_c + L₉₉.₉·T_c. 측위 지연 τ_est 는 별도 항이라 빠져 있습니다(6장의 최대 나이는 여기에 τ_est 를 더한 값).', en: 't_age = n(τ_c + J) + T_c + L₉₉.₉·T_c. The estimation latency τ_est is a separate term and is left out (the maximum age of ch. 6 adds τ_est).' })} status={b.ageMax > tCfg ? 'warn' : 'good'} />
         <Stat label={{ ko: '권장 수평 간격: 유지', en: 'Min. horizontal spacing: hold' }} value={both.hold.minSepH} unit="m" src={der('ch8#budget-sum')} />
         <Stat label={{ ko: '권장 수평 간격: 외삽', en: 'Min. horizontal spacing: extrapolate' }} value={both.ext.minSepH} unit="m" src={der('ch8#extrapolate')} status={both.ext.minSepH > both.hold.minSepH ? 'warn' : 'good'} />
       </StatRow>

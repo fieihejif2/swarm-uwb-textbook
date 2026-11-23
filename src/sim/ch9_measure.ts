@@ -201,9 +201,10 @@ export function predictStatic(cfg: SystemConfig, p: Vec, measSigma?: number): St
  * 역산: 지점 p 의 정지 시험에서 잰 수평 흔들림 measuredH 를 모델이 그대로 내놓게 하는 측정 노이즈 σ 를 이분법으로 찾는다.
  * 찾을 수 없으면(범위 밖) NaN.
  */
-export function calibrateMeasSigma(cfg: SystemConfig, p: Vec, measuredH: number): number {
+export function calibrateMeasSigma(cfg: SystemConfig, p: Vec, measuredH: number, model: 'static' | 'flight' = 'static'): number {
   if (!(measuredH > 0)) return NaN;
-  const f = (s: number) => predictStatic(cfg, p, s).staticH;
+  // static: σ_a 를 "모르는 움직임"으로 보는 해석(정지 중에는 없음) / flight: σ_a 를 가속도계 잡음으로 보는 해석(정지 중에도 있음)
+  const f = (s: number) => (model === 'static' ? predictStatic(cfg, p, s).staticH : predictStatic(cfg, p, s).flightH);
   let lo = 1e-4, hi = 5;
   if (!(f(lo) < measuredH) || !(f(hi) > measuredH)) return NaN;
   for (let i = 0; i < 50; i++) {
@@ -221,6 +222,27 @@ export function withPath(cfg: SystemConfig, path: string, value: unknown): Syste
   for (const k of keys.slice(0, -1)) o = o[k];
   o[keys[keys.length - 1]] = value;
   return sanitizeConfig(next).config;
+}
+
+/**
+ * 편도 지연이 서로 독립인 U(μ−J, μ+J) 두 개이면 왕복의 절반은 μ ± J 의 삼각분포를 따른다.
+ * 그 분포의 95 % 분위수는 μ + (1 − √0.1) J 이므로 (위쪽 꼬리 넓이 (J − x)²/(2J²) = 0.05 에서),
+ * "p5 ~ p95 폭의 절반" w 를 (1 − √0.1) 로 나누면 편도의 균등 지터 J 가 된다.
+ */
+export const TRI_Q95 = 1 - Math.sqrt(0.1);
+export const jitterFromHalfWidth = (halfWidth: number): number => halfWidth / TRI_Q95;
+/**
+ * 앵커별 편향(중앙값 − 실제 거리)에서 "앵커마다 다른" 몫의 크기를 어림한다.
+ * 모든 앵커에 공통인 몫(안테나 지연 보정, NLOS 가 중앙값을 미는 몫)은 평균으로 빼고,
+ * 중앙값 추정 자체의 흔들림(표준오차 ≈ 1.2533 σ/√n) 분산도 뺀다.
+ */
+export function anchorBiasSpread(bias: number[], robustSigma: number[], n: number[]): { common: number; spread: number; raw: number } {
+  const k = bias.length;
+  if (k < 2) return { common: NaN, spread: NaN, raw: NaN };
+  const common = mean(bias);
+  const raw = Math.sqrt(bias.reduce((s, v) => s + (v - common) ** 2, 0) / (k - 1));
+  const seVar = mean(robustSigma.map((s, i) => (1.2533 * s) ** 2 / Math.max(1, n[i])));
+  return { common, spread: Math.sqrt(Math.max(0, raw * raw - seVar)), raw };
 }
 
 /** 두 독립 균등분포 U(μ−J, μ+J) 의 평균이 따르는 삼각분포의 밀도 (왕복/2 의 모델) */
@@ -311,18 +333,30 @@ export function sampleSigmaAr1(n: number, rho: number, rng: Rng): number {
 // ── 샘플 로그: public/samples/*.csv 와 화면의 "샘플 불러오기" 버튼이 같은 함수를 쓴다.
 
 const round = (v: number, d: number): number => Number(v.toFixed(d));
+/**
+ * 샘플 로그의 "예시 측정" 값. 일부러 기본 설정(σ_TDoA 15 cm, σ_TWR 10 cm, 지연 20 ms ± 5 ms)과 다르게 고정해,
+ * 샘플을 전역 설정에 반영하면 무엇이 바뀌는지 화면에서 보이게 한다. 앵커 배치·모드·NLOS 등 나머지는 지금 설정을 쓴다.
+ * (실제 측정값이 아니라 교재가 고른 예시값이다.)
+ */
+export const SAMPLE_MEASUREMENT = { sigmaTdoa: 0.2, sigmaTwr: 0.13, delayMean: 0.028, delayJitter: 0.008 } as const;
+/** 지금 설정에 SAMPLE_MEASUREMENT 를 덮어쓴 설정(샘플 생성용) */
+export function sampleMeasurementConfig(cfg: SystemConfig): SystemConfig {
+  const m = SAMPLE_MEASUREMENT;
+  return { ...cfg, uwb: { ...cfg.uwb, sigmaTdoa: m.sigmaTdoa, sigmaTwr: m.sigmaTwr }, comm: { ...cfg.comm, delayMean: m.delayMean, delayJitter: m.delayJitter } };
+}
+const SAMPLE_NOTE = `# example measurement: noise and delay are fixed sample values, NOT the current settings: ${JSON.stringify(SAMPLE_MEASUREMENT)}`;
 /** 정지 로그 샘플의 고정 지점: 삼각대 위(높이 1 m). 기본 앵커 배치가 둘러싼 공간 안이다. [m] */
 export const SAMPLE_STATIC_POINT: Vec = [3, 2, 1.0];
 /** 정지 로그 샘플: 현재 설정의 모델이 그 지점에서 예측하는 흔들림으로 만든다. 10 Hz 로 60 초. */
 export function sampleStaticLog(cfg: SystemConfig, seed = 11): string {
-  const pr = predictStatic(cfg, SAMPLE_STATIC_POINT);
-  return synthStaticLog({ sigmaH: round(pr.staticH, 4), sigmaV: round(pr.staticV, 4), rate: 10, duration: 60, seed, pos: SAMPLE_STATIC_POINT });
+  const pr = predictStatic(sampleMeasurementConfig(cfg), SAMPLE_STATIC_POINT);
+  return SAMPLE_NOTE + '\n' + synthStaticLog({ sigmaH: round(pr.staticH, 4), sigmaV: round(pr.staticV, 4), rate: 10, duration: 60, seed, pos: SAMPLE_STATIC_POINT });
 }
 /** 드리프트가 섞인 정지 로그 샘플: 삼각대 위(높이 1 m)에서 x 축으로 1 mm/s 씩 흐른다. */
 export function sampleDriftLog(cfg: SystemConfig, seed = 14): string {
   const pos: Vec = [3, 2, 1];
-  const pr = predictStatic(cfg, pos);
-  return synthDriftLog({ sigmaH: round(pr.staticH, 4), sigmaV: round(pr.staticV, 4), drift: 0.001, rate: 10, duration: 60, seed, pos });
+  const pr = predictStatic(sampleMeasurementConfig(cfg), pos);
+  return SAMPLE_NOTE + '\n' + synthDriftLog({ sigmaH: round(pr.staticH, 4), sigmaV: round(pr.staticV, 4), drift: 0.001, rate: 10, duration: 60, seed, pos });
 }
 /** 거리 로그 샘플: 강당 한가운데 높이 1 m 지점에서 각 앵커까지. 앵커마다 작은 고정 편향을 넣는다. */
 export function sampleRangeLog(cfg: SystemConfig, seed = 12): { text: string; point: Vec; dists: number[]; biases: number[] } {
@@ -330,8 +364,8 @@ export function sampleRangeLog(cfg: SystemConfig, seed = 12): { text: string; po
   const rng = new Rng(seed);
   const dists = cfg.anchors.map((a) => round(dist(a, point), 3));
   const biases = cfg.anchors.map(() => round(rng.gauss(0, cfg.uwb.anchorSurveyError), 3));
-  const text = synthRangeLog({ dists, sigma: cfg.uwb.sigmaTwr, biases, pNlos: cfg.uwb.pNlos, biasMean: cfg.uwb.nlosBiasMean, perAnchor: 500, seed });
+  const text = SAMPLE_NOTE + '\n' + synthRangeLog({ dists, sigma: SAMPLE_MEASUREMENT.sigmaTwr, biases, pNlos: cfg.uwb.pNlos, biasMean: cfg.uwb.nlosBiasMean, perAnchor: 500, seed });
   return { text, point, dists, biases };
 }
 /** 왕복 지연 로그 샘플: 방송 주기로 1200 개(20 Hz 면 60 초)의 핑 */
-export const sampleLatencyLog = (cfg: SystemConfig, seed = 13): string => synthLatencyLog(cfg, 1200, seed);
+export const sampleLatencyLog = (cfg: SystemConfig, seed = 13): string => SAMPLE_NOTE + '\n' + synthLatencyLog(sampleMeasurementConfig(cfg), 1200, seed);

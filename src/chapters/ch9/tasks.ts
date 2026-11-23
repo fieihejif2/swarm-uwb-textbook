@@ -15,15 +15,20 @@ def fit_log(t_send, t_recv, seq):
     t_recv = np.asarray(t_recv, dtype=float)
     seq = np.asarray(seq)
     # 1) 왕복 시간 → 편도 지연 (대칭 가정)
+    # 1) round-trip time -> one-way delay (assume symmetry)
     # 2) 평균과 95 % 분위수
+    # 2) mean and 95 % quantile
     # 3) 보낸 개수(첫 순번 ~ 마지막 순번)와 빠진 개수 → 손실률
+    # 3) number sent (first to last seq) and number missing -> loss rate
     return {"delay_mean": 0.0, "delay_p95": 0.0, "loss_rate": 0.0}
 
 def fit_sigma(t, x):
     t = np.asarray(t, dtype=float)
     x = np.asarray(x, dtype=float)
     # 1) 직선 x = a + b t 를 맞춘다 (np.polyfit)
+    # 1) fit a line x = a + b t (np.polyfit)
     # 2) 직선을 뺀 잔차의 표본 표준편차 (ddof=1)
+    # 2) sample standard deviation of the residuals after removing the line (ddof=1)
     sigma = 0.0
     drift = 0.0
     return sigma, drift
@@ -34,23 +39,23 @@ def fit_log(t_send, t_recv, seq):
     t_send = np.asarray(t_send, dtype=float)
     t_recv = np.asarray(t_recv, dtype=float)
     seq = np.asarray(seq)
-    rtt = t_recv - t_send                  # 왕복 시간: 두 시각 모두 같은 PC 시계
-    one_way = rtt / 2                      # 대칭 가정: 편도 = 왕복의 절반
-    sent = seq.max() - seq.min() + 1       # 보낸 개수: 첫 순번 ~ 마지막 순번
-    lost = sent - len(np.unique(seq))      # 돌아오지 않은 개수
+    rtt = t_recv - t_send                  # 왕복 시간: 두 시각 모두 같은 PC 시계 / round trip; both stamps from one PC clock
+    one_way = rtt / 2                      # 대칭 가정: 편도 = 왕복의 절반 / symmetric: one-way = half
+    sent = seq.max() - seq.min() + 1       # 보낸 개수: 첫 순번 ~ 마지막 순번 / sent: first to last seq
+    lost = sent - len(np.unique(seq))      # 돌아오지 않은 개수 / not returned
     return {
         "delay_mean": float(np.mean(one_way)),
         "delay_p95": float(np.percentile(one_way, 95)),
-        "loss_rate": float(lost / sent),   # 빠진 개수 / 보낸 개수
+        "loss_rate": float(lost / sent),   # 빠진 개수 / 보낸 개수 (lost / sent)
     }
 
 def fit_sigma(t, x):
     t = np.asarray(t, dtype=float)
     x = np.asarray(x, dtype=float)
-    tt = t - t[0]                          # 첫 시각 기준 (큰 시각값에서도 안전)
-    b, a = np.polyfit(tt, x, 1)            # 느린 드리프트: x = a + b t
-    resid = x - (a + b * tt)               # 추세를 뺀 잔차
-    sigma = np.std(resid, ddof=1)          # 표본 표준편차 (n-1 로 나눔)
+    tt = t - t[0]                          # 첫 시각 기준 (큰 시각값에서도 안전) / from the first stamp
+    b, a = np.polyfit(tt, x, 1)            # 느린 드리프트: x = a + b t / slow drift
+    resid = x - (a + b * tt)               # 추세를 뺀 잔차 / detrended residual
+    sigma = np.std(resid, ddof=1)          # 표본 표준편차 (n-1 로 나눔) / sample std (n-1)
     return float(sigma), float(b)
 `,
   links: { rtt: [7], half: [8], sent: [9], lost: [10, 14], mean: [12], p95: [13], trend: [21, 22], sigma: [23] },

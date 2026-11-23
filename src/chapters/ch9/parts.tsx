@@ -13,7 +13,7 @@ import { Button, CfgVal, LineChart, RefLine, SrcBadge, Status, Val, rich } from 
 /** "여러분의 파일에서 계산한 값" 배지. where 는 그 계산식을 유도한 카드. */
 export const fromFile = (where: string, ko = '불러온 로그에서 이 장의 식으로 계산한 값', en = 'Computed from the loaded log with the formulas of this chapter'): SrcRef =>
   der(`ch9#${where}`, { ko, en });
-export const PREVIEW = der('ch9#sensitivity', { ko: '이 값만 바꿔서 오차 예산을 다시 계산한 결과', en: 'The error budget recomputed with only this value changed' });
+export const PREVIEW = der('ch8#budget-sum', { ko: '이 값만 바꿔서 오차 예산을 다시 계산한 결과', en: 'The error budget recomputed with only this value changed' });
 
 /** 숫자 하나 + 단위 + 유도 배지 (표의 칸에 쓴다) */
 export function Num({ v, unit, digits = 3, src }: { v: number; unit?: string; digits?: number; src: SrcRef }) {

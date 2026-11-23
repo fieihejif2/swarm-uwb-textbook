@@ -109,7 +109,8 @@ export function computeBudget(cfg: SystemConfig): Budget {
   items.push({ id: 'raw-pos', chapter: 4, kind: 'info', value: sigmaPosH, valueV: sigmaPosV, unit: 'm', formula: '\\sigma_{\\text{pos}} = \\text{DOP}\\cdot\\sigma_{\\text{eff}}', inputs: [] });
 
   // ── 5장: 융합 후 추정 오차
-  const sigmaEstH = steadyStatePosSigma(sigmaPosH, posRate, cfg.estimation.accelNoise);
+  // 수평 오차는 x, y 두 축의 합이므로 축마다 1축 필터를 적용한 뒤 다시 합친다(σ_x = σ_y = σ_H/√2 로 가정)
+  const sigmaEstH = Math.SQRT2 * steadyStatePosSigma(sigmaPosH / Math.SQRT2, posRate, cfg.estimation.accelNoise);
   const sigmaEstV = steadyStatePosSigma(sigmaPosV, posRate, cfg.estimation.accelNoise);
   items.push({ id: 'est-sigma', chapter: 5, kind: 'random', value: sigmaEstH, valueV: sigmaEstV, unit: 'm', formula: '\\sigma_{\\text{est}} = \\sqrt{P_\\infty^{+}[p,p]}', inputs: ['estimation.accelNoise'] });
 
@@ -131,7 +132,7 @@ export function computeBudget(cfg: SystemConfig): Budget {
   const gapLag = cfg.safety.extrapolate ? 0.5 * cfg.vehicle.aMax * (ageMax ** 2 - (tauMax + period) ** 2) : cfg.safety.relSpeed * gap;
   items.push({
     id: 'comm-delay', chapter: 7, kind: 'deterministic', value: commLag, unit: 'm',
-    formula: cfg.safety.extrapolate ? '\\tfrac{1}{2} a_{\\max}\\,(\\tau_c + T_c)^2' : 'v_{\\text{rel}}\\,(\\tau_c + T_c)', inputs: ['comm.delayMean', 'comm.delayJitter', 'comm.rate', 'comm.topology', 'safety.relSpeed'],
+    formula: cfg.safety.extrapolate ? '\\tfrac{1}{2} a_{\\max}\\,\\big(n_{\\text{hop}}(\\bar\\tau_c + J_c) + T_c\\big)^2' : 'v_{\\text{rel}}\\,\\big(n_{\\text{hop}}(\\bar\\tau_c + J_c) + T_c\\big)', inputs: ['comm.delayMean', 'comm.delayJitter', 'comm.rate', 'comm.topology', 'safety.relSpeed'],
   });
   items.push({
     id: 'comm-gap', chapter: 7, kind: 'deterministic', value: gapLag, unit: 'm',

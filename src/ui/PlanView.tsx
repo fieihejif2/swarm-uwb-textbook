@@ -39,7 +39,7 @@ export function PlanView(p: PlanViewProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const svg = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<number | null>(null);
-  const m = { l: 40, r: 10, t: 10, b: 36 };
+  const m = { l: 44, r: 14, t: 14, b: 40 };
   const maxH = p.maxHeight ?? 420;
   let iw = Math.max(120, width - m.l - m.r);
   let ih = (iw * p.hall.y) / p.hall.x;
@@ -96,8 +96,8 @@ export function PlanView(p: PlanViewProps) {
             {xt.map((v) => <line key={`gx${v}`} x1={sx(v)} x2={sx(v)} y1={m.t} y2={m.t + ih} stroke="var(--text-3)" stroke-width="0.5" opacity="0.35" />)}
             {yt.map((v) => <line key={`gy${v}`} x1={m.l} x2={m.l + iw} y1={sy(v)} y2={sy(v)} stroke="var(--text-3)" stroke-width="0.5" opacity="0.35" />)}
             <rect x={m.l} y={m.t} width={iw} height={ih} fill="none" stroke="var(--text-2)" stroke-width="1.5" />
-            {xt.map((v) => <text key={`tx${v}`} class="tick" x={sx(v)} y={m.t + ih + 14} text-anchor="middle">{fmt(v)}</text>)}
-            {yt.map((v) => <text key={`ty${v}`} class="tick" x={m.l - 6} y={sy(v) + 4} text-anchor="end">{fmt(v)}</text>)}
+            {xt.map((v) => <text key={`tx${v}`} class="tick" x={sx(v)} y={m.t + ih + 20} text-anchor="middle">{fmt(v)}</text>)}
+            {yt.map((v) => <text key={`ty${v}`} class="tick" x={m.l - 11} y={sy(v) + 4} text-anchor="end">{fmt(v)}</text>)}
             <text class="axis-label" x={m.l + iw / 2} y={H - 4} text-anchor="middle">x [m]</text>
             <text class="axis-label" transform={`translate(11 ${m.t + ih / 2}) rotate(-90)`} text-anchor="middle">y [m]</text>
             {p.children?.({ sx, sy, k })}
@@ -110,9 +110,17 @@ export function PlanView(p: PlanViewProps) {
             )}
             {(p.anchors ?? []).map((a, i) => {
               const movable = !!p.onAnchorMove;
+              const anchors = p.anchors ?? [];
+              const same = (j: number) => Math.hypot(anchors[j][0] - a[0], anchors[j][1] - a[1]) * k < 14;
+              const labelOf = (idx: number) => {
+                // 같은 자리(화면에서 14 px 이내)의 앵커 중 번호가 가장 작은 것만 라벨을 단다
+                const group = anchors.map((_, j) => j).filter(same);
+                if (group[0] !== idx) return null;
+                return { names: group.map((j) => `A${j}`).join('·'), zs: group.map((j) => fmt(anchors[j][2], 2)).join(' / ') };
+              };
               return (
                 <g
-                  key={i} transform={`translate(${sx(a[0])} ${sy(a[1])})`} tabIndex={movable ? 0 : undefined} role={movable ? 'slider' : 'img'}
+                  key={i} transform={`translate(${sx(a[0])} ${sy(a[1])})`} {...((movable ? { tabindex: '0' } : {}) as any)} role={movable ? 'slider' : 'img'}
                   aria-label={tr({ ko: `앵커 ${i}: x ${fmt(a[0])} m, y ${fmt(a[1])} m, 높이 ${fmt(a[2])} m${movable ? '. 방향키로 이동' : ''}`, en: `Anchor ${i}: x ${fmt(a[0])} m, y ${fmt(a[1])} m, height ${fmt(a[2])} m${movable ? '. Move with arrow keys' : ''}` })}
                   aria-valuetext={`${fmt(a[0])}, ${fmt(a[1])}`}
                   style={{ cursor: movable ? 'grab' : 'default', touchAction: 'none' }} data-testid={`anchor-${i}`}
@@ -129,8 +137,16 @@ export function PlanView(p: PlanViewProps) {
                 >
                   <circle r="16" fill="transparent" />
                   <rect x="-7" y="-7" width="14" height="14" rx="2" transform="rotate(45)" fill="var(--series-2)" stroke="var(--surface)" stroke-width="2" />
-                  <text y="-12" text-anchor="middle" class="ref-label" style={{ fontWeight: 700 }}>A{i}</text>
-                  <text y="20" text-anchor="middle" class="ref-label">z={fmt(a[2], 2)}</text>
+                  {labelOf(i) && (() => {
+                    // 라벨은 강당 안쪽으로 놓는다(벽·눈금과 겹치지 않게). 같은 자리의 앵커는 라벨 하나로 합친다.
+                    const right = a[0] < p.hall.x / 2, below = a[1] > p.hall.y / 2;
+                    const lab = labelOf(i)!;
+                    return (
+                      <text x={right ? 11 : -11} y={below ? 18 : -10} text-anchor={right ? 'start' : 'end'} class="ref-label">
+                        <tspan style={{ fontWeight: 700 }}>{lab.names}</tspan><tspan dx="4">z {lab.zs}</tspan>
+                      </text>
+                    );
+                  })()}
                 </g>
               );
             })}
@@ -143,7 +159,7 @@ export function PlanView(p: PlanViewProps) {
           <span class="item num">
             {fmt(p.heat.min, 2)}
             <span aria-hidden="true" style={{ display: 'inline-block', width: '110px', height: '10px', borderRadius: '5px', background: `linear-gradient(to right, ${[0, 0.25, 0.5, 0.75, 1].map((t) => sequentialCss(t, dark)).join(',')})` }} />
-            ≥ {fmt(p.heat.max, 2)}
+            {p.heat.values.some((r) => r.some((v) => Number.isFinite(v) && v > p.heat!.max * (1 + 1e-9))) ? '≥ ' : ''}{fmt(p.heat.max, 2)}
           </span>
           <span class="item"><span aria-hidden="true" style={{ display: 'inline-block', width: '12px', height: '10px', background: 'repeating-conic-gradient(#969696 0% 25%, #6e6e6e 0% 50%) 50% / 6px 6px' }} />{tr({ ko: '풀 수 없음', en: 'unsolvable' })}</span>
           {p.src && <SrcBadge src={p.src} />}

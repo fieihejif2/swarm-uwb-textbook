@@ -37,8 +37,8 @@ export function EstimatorLink() {
   return (
     <LinkGroup>
       <Demo title={{ ko: '추정식이 코드와 그래프의 어디에 있나', en: 'Where the estimators live in the code and the charts' }} testId="ch9-link-demo">
-        <P ko="아래 식의 항을 가리키면, 손코딩 과제의 기준 구현에서 그 항을 계산하는 줄과 그래프의 기준선이 함께 강조됩니다. 데이터는 지금 전역 설정으로 만든 **합성 로그**입니다."
-          en="Point at a term of the formulas and the line of the reference implementation that computes it lights up together with the reference line in the chart. The data is a **synthetic log** generated from the current global settings." />
+        <P ko="아래 식의 항을 가리키면, 손코딩 과제의 기준 구현에서 그 항을 계산하는 줄과 그래프의 기준선이 함께 강조됩니다. 데이터는 지금 전역 설정으로 만든 **합성 로그**입니다. 합성 로그는 편도 지연을 '평균 ± 지터'의 균등분포에서 두 번(올라가는 길, 내려오는 길) 뽑아 만들었으므로, 그 평균인 '왕복의 절반'은 가운데가 뾰족한 삼각분포를 따릅니다(위의 '왕복에서 편도로' 유도). 정지 로그의 참 σ 는 강당 한가운데의 수평 흔들림을 $\sqrt2$ 로 나눈 **한 축** 값입니다(수평 σ 는 x·y 두 축을 합친 값이라 한 축의 $\sqrt2$ 배)."
+          en="Point at a term of the formulas and the line of the reference implementation that computes it lights up together with the reference line in the chart. The data is a **synthetic log** generated from the current global settings. It draws the one-way delay twice (up and down) from a uniform 'mean ± jitter' distribution, so their mean, half the round trip, follows a triangular distribution peaked in the middle (derivation 'From round trip to one way' above). The true σ of the static log is a **single-axis** value, the horizontal jitter at the hall centre divided by $\sqrt2$ (the horizontal σ combines x and y, so it is $\sqrt2$ times one axis)." />
         <M block tex={String.raw`\hat\tau_i = \lk{half}{\tfrac{1}{2}}\,\lk{rtt}{\big(t^{\text{recv}}_i - t^{\text{send}}_i\big)},\qquad \lk{mean}{\bar\tau = \tfrac{1}{n}\textstyle\sum_i \hat\tau_i},\qquad \lk{p95}{\tau_{95} = Q_{0.95}(\hat\tau)}`} />
         <M block tex={String.raw`\lk{lost}{\hat p_{\text{loss}} = \frac{N_{\text{sent}} - n}{N_{\text{sent}}}},\qquad \lk{sent}{N_{\text{sent}} = k_{\text{last}} - k_{\text{first}} + 1}`} />
         <M block tex={String.raw`\lk{trend}{r_i = x_i - (\hat a + \hat b\,t_i)},\qquad \lk{sigma}{\hat\sigma = \sqrt{\tfrac{1}{n-1}\textstyle\sum_i r_i^2}}`} />
@@ -55,8 +55,8 @@ export function EstimatorLink() {
             values={lat.d} bins={30} range={[Math.max(0, mu - J - 1), mu + J + 1]} xLabel={{ ko: '편도 지연 [ms]', en: 'One-way delay [ms]' }} slot={1} src={SIM_D}
             theory={{ name: { ko: '이론: 두 편도 지연의 평균(삼각분포)', en: 'Theory: mean of two one-way delays (triangular)' }, pdf: (x) => triangularPdf(x, mu, J) }}
             refLines={[
-              { x: lat.fit.delayMean * 1000, label: { ko: `평균 ${fmt(lat.fit.delayMean * 1000, 3)} ms`, en: `mean ${fmt(lat.fit.delayMean * 1000, 3)} ms` }, slot: 3, link: 'mean' },
-              { x: lat.fit.p95 * 1000, label: { ko: `p95 ${fmt(lat.fit.p95 * 1000, 3)} ms`, en: `p95 ${fmt(lat.fit.p95 * 1000, 3)} ms` }, slot: 2, link: 'p95' },
+              { x: lat.fit.delayMean * 1000, label: { ko: `평균 ${fmt(lat.fit.delayMean * 1000, 3)}`, en: `mean ${fmt(lat.fit.delayMean * 1000, 3)}` }, slot: 3, link: 'mean' },
+              { x: lat.fit.p95 * 1000, label: { ko: `p95 ${fmt(lat.fit.p95 * 1000, 3)}`, en: `p95 ${fmt(lat.fit.p95 * 1000, 3)}` }, slot: 2, link: 'p95' },
             ]} testId="ch9-link-hist" />
           <LineChart
             title={{ ko: '정지 로그 한 축과 맞춘 직선', en: 'One axis of the static log and the fitted line' }} xLabel={{ ko: '시간 [s]', en: 'Time [s]' }} yLabel={{ ko: '위치 [cm]', en: 'Position [cm]' }} height={220}
@@ -71,7 +71,7 @@ export function EstimatorLink() {
           theory={{ name: { ko: '이론: 정규분포 N(0, 참 σ²)', en: 'Theory: normal N(0, true σ²)' }, pdf: (x) => normPdf(x, 0, sigTrue * 100) }}
           refLines={[{ x: -stat.sigma, label: { ko: '−σ (추정)', en: '−σ (est.)' }, slot: 3, link: 'sigma' }, { x: stat.sigma, label: { ko: '+σ (추정)', en: '+σ (est.)' }, slot: 3, link: 'sigma' }]} />
         <StatRow>
-          <Stat label={{ ko: '손실률 $\\hat p_{\\text{loss}}$', en: 'Loss rate $\\hat p_{\\text{loss}}$' }} value={lat.fit.lossRate * 100} unit="%" src={SIM_D} />
+          <Stat label={{ ko: '손실률 $\\hat p_{\\text{loss}}$', en: 'Loss rate $\\hat p_{\\text{loss}}$' }} value={lat.fit.lossRate * 100} unit="%" src={der('ch9#loss-fit', { ko: '지금 전역 설정의 손실 모델로 만든 합성 왕복 로그(핑 1200개)에서 빠진 순번을 센 결과', en: 'Missing sequence numbers counted in a synthetic round-trip log (1200 pings) generated from the loss model in the current global settings' })} />
           <Stat label={{ ko: '참 σ (합성에 쓴 값)', en: 'True σ (used to generate)' }} value={sigTrue * 100} unit="cm" src={der('ch9#static-check', { ko: '지금 설정의 모델이 강당 한가운데에서 예측하는 한 축의 정지 흔들림', en: 'Per-axis parked jitter predicted at the hall centre by the model with the current settings' })} />
           <Stat label={{ ko: '추세를 뺀 $\\hat\\sigma$', en: 'Detrended $\\hat\\sigma$' }} value={stat.sigma} unit="cm" src={SIM_S} />
           <Stat label={{ ko: '그냥 잰 σ', en: 'Raw σ' }} value={stat.raw} unit="cm" src={SIM_S} status={stat.raw > 1.15 * stat.sigma ? 'warn' : undefined} />
@@ -146,8 +146,8 @@ export function ClockPitfall() {
   const span = Math.max(Math.abs(Math.min(...naive)), Math.abs(Math.max(...naive)), 2 * (cfg.comm.delayMean + cfg.comm.delayJitter) * 1000) * 1.15;
   return (
     <Pitfall title={{ ko: '서로 다른 시계의 타임스탬프를 그대로 빼기', en: 'Subtracting timestamps taken on two different clocks' }} testId="ch9-pitfall">
-      <P ko="'보낸 시각은 PC 로그에 있고 받은 시각은 기체 로그에 있으니, 둘을 빼면 편도 지연이다.' 가장 흔한 실수입니다. 기체의 시계는 전원을 켠 순간부터 세고 PC 의 시계는 전혀 다른 기준에서 세므로, 두 시계 사이에는 알 수 없는 **오프셋**이 있고 진동자가 달라 조금씩 **벌어지기까지** 합니다. 아래에서 오프셋과 벌어지는 속도를 바꿔 보세요. (5장의 '수신 시각으로 타임스탬프 찍기' 함정과 짝을 이룹니다. 거기서는 시각을 **어느 순간**에 찍느냐가, 여기서는 **어느 시계**로 찍느냐가 문제입니다.)"
-        en="'The send time is in the PC log and the receive time in the vehicle log, so their difference is the one-way delay.' The most common mistake. The vehicle clock counts from power-up and the PC clock from a completely different origin, so there is an unknown **offset** between them, and with different oscillators they even **drift apart**. Change the offset and the drift below. (This pairs with the 'stamping at reception' trap of chapter 5: there the issue is **at which instant** you stamp, here **with which clock**.)" />
+      <P ko="'보낸 시각은 PC 로그에 있고 받은 시각은 기체 로그에 있으니, 둘을 빼면 편도 지연이다.' 하기 쉬운 실수입니다. 기체의 시계와 PC 의 시계는 0 으로 삼는 기준이 서로 다르므로, 두 시계 사이에는 알 수 없는 **오프셋**이 있고 진동자가 달라 조금씩 **벌어지기까지** 합니다. 아래에서 오프셋과 벌어지는 속도를 바꿔 보세요. (5장의 '수신 시각으로 타임스탬프 찍기' 함정과 짝을 이룹니다. 거기서는 시각을 **어느 순간**에 찍느냐가, 여기서는 **어느 시계**로 찍느냐가 문제입니다.)"
+        en="'The send time is in the PC log and the receive time in the vehicle log, so their difference is the one-way delay.' An easy mistake to make. The vehicle clock and the PC clock count from different origins, so there is an unknown **offset** between them, and with different oscillators they even **drift apart**. Change the offset and the drift below. (This pairs with the 'stamping at reception' trap of chapter 5: there the issue is **at which instant** you stamp, here **with which clock**.)" />
       <div class="controls">
         <Slider label={{ ko: '기체 시계가 PC 시계보다 앞선 양 (오프셋)', en: 'Vehicle clock ahead of the PC clock (offset)' }} value={offMs} min={-300} max={300} step={5} unit="ms" onChange={setOffMs} src={ex(undefined, LOCAL)} testId="ch9-pitfall-offset" />
         <Slider label={{ ko: '두 시계가 벌어지는 속도', en: 'Rate at which the clocks drift apart' }} value={ppm} min={0} max={200} step={5} unit="ppm" onChange={setPpm} src={ex(undefined, LOCAL)} testId="ch9-pitfall-ppm" />
@@ -223,8 +223,8 @@ export function DriftPitfall() {
         <Stat label={{ ko: '60 s 로그에서 추세를 뺀 $\\hat\\sigma$', en: 'Detrended $\\hat\\sigma$ of a 60 s log' }} value={sweep.det[i60]} unit="cm" src={SIM} status="good" />
         <Stat label={{ ko: '60 s 동안 흘러간 거리', en: 'Distance drifted in 60 s' }} value={prm.driftMm * 6} unit="cm" src={der('ch9#sigma-fit', { ko: '드리프트 × 60 s', en: 'drift × 60 s' })} />
       </StatRow>
-      <P ko="부풀려진 σ 를 설정에 넣으면 예산이 두 번 틀립니다. 무작위 오차 칸은 실제보다 커지고(필터가 걸러 줄 수 있는 것으로 계산됩니다), 정작 필터가 걸러 주지 못하는 **편향** 칸은 비어 있게 됩니다. 드리프트는 따로 적어 두고, 원인(앵커 좌표, 온도, 안테나 방향)을 찾아 없애거나 편향 항목으로 예산에 넣어야 합니다."
-        en="Putting the inflated σ into the settings makes the budget wrong twice: the random-error line becomes too large (and is treated as something the filter can average out), while the **bias** line, which the filter cannot remove, stays empty. Record the drift separately, then either find and remove its cause (anchor coordinates, temperature, antenna orientation) or budget it as a bias." />
+      <P ko="부풀려진 σ 를 설정에 넣으면 예산이 두 번 틀립니다. 무작위 오차 칸은 실제보다 커지고(필터가 걸러 줄 수 있는 것으로 계산됩니다), 정작 필터가 걸러 주지 못하는 **편향** 칸은 비어 있게 됩니다. 드리프트는 따로 적어 두고, 원인(앵커 좌표, 온도, 안테나 방향)을 찾아 없애거나 편향으로 예산에 넣어야 합니다. 지금 예산에는 편향 전용 칸이 없으므로, 실험 1 의 규칙대로 **추가 여유** 칸에 더합니다."
+        en="Putting the inflated σ into the settings makes the budget wrong twice: the random-error line becomes too large (and is treated as something the filter can average out), while the **bias** line, which the filter cannot remove, stays empty. Record the drift separately, then either find and remove its cause (anchor coordinates, temperature, antenna orientation) or budget it as a bias. The budget has no dedicated bias line yet, so add it to the **extra margin** by the rule of experiment 1." />
       <P class="small muted" ko="합성 로그의 표본 주기는 Crazyswarm2 의 기본 pose 로그 주기와 같은 10 Hz{{lit:crazyswarm2-docs/pose-topic-rate}} 로 두었습니다."
         en="The synthetic log is sampled at 10 Hz{{lit:crazyswarm2-docs/pose-topic-rate}}, the default pose logging rate of Crazyswarm2." />
     </Pitfall>
