@@ -6,6 +6,8 @@ import { route } from './app/router';
 import { ChapterShell } from './ui/ChapterShell';
 import { Layout } from './ui/Layout';
 import { Home } from './pages/Home';
+// 한글 가독성을 위해 Pretendard 가변 글꼴을 로컬 번들로 쓴다(글자 범위별로 필요한 조각만 내려받음, 외부 요청 없음)
+import 'pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css';
 import './styles.css';
 
 document.documentElement.lang = lang.value;
