@@ -272,6 +272,12 @@ function RangeTab({ loaded, onLoad }: { loaded: Loaded | null; onLoad: (l: Loade
   const rows = useMemo(() => (check?.ok ? fitRangeLog(check.table, truth) : null), [check, loaded?.truth]);
   const SRC = fromFile('nlos-fit');
   const setTruth = (anchor: number, v: number) => loaded && onLoad({ ...loaded, truth: { ...truth, [anchor]: v } });
+  // 기준 거리는 "설정에 넣은 앵커 좌표"와 줄자로 잰 태그 위치에서 계산한다(그래야 좌표 오차가 편향에 들어간다)
+  const [tagP, setTagP] = useState<[number, number, number]>(() => [cfg.hall.x / 2, cfg.hall.y / 2, 1]);
+  const fillFromTag = (ids: number[]) => loaded && onLoad({
+    ...loaded,
+    truth: { ...truth, ...Object.fromEntries(ids.filter((id) => id >= 0 && id < cfg.anchors.length).map((id) => { const a = cfg.anchors[id]; return [id, Math.round(Math.hypot(tagP[0] - a[0], tagP[1] - a[1], tagP[2] - a[2]) * 1000) / 1000]; })) },
+  });
   return (
     <div data-testid="ch9-range">
       <Loader kind="range" loaded={loaded} check={check} onLoad={(l) => { setSel(0); onLoad(l); }} samples={[
@@ -301,13 +307,23 @@ function RangeTab({ loaded, onLoad }: { loaded: Loaded | null; onLoad: (l: Loade
               { value: 'uwb.sigmaTwr', label: { ko: '앵커까지의 거리 (TWR)', en: 'Range to an anchor (TWR)' } },
               { value: 'uwb.sigmaTdoa', label: { ko: '앵커 쌍의 거리차 (TDoA)', en: 'Range difference of an anchor pair (TDoA)' } },
             ]} />
-            <P ko="**실제 거리**를 아는 앵커는 아래 칸에 넣으세요(줄자나 레이저 거리계로 잰 안테나 사이 거리). 넣은 앵커만 편향을 계산합니다. 샘플은 생성에 쓴 거리를 미리 채워 두었습니다."
-              en="Enter the **true distance** for the anchors where you know it (antenna to antenna, by tape or laser meter). Bias is computed only for those anchors. For the sample the distances used to generate it are pre-filled." />
+            <P ko="**기준 거리**를 앵커마다 넣으세요. 기준 거리는 줄자로 잰 태그 위치와 **설정에 넣은 앵커 좌표** 사이의 거리입니다. 그래야 설정 좌표가 틀린 만큼이 편향에 나타납니다(아래 유도). 안테나 사이를 줄자로 직접 잰 거리를 넣으면 좌표 오차는 보이지 않고 앵커별 거리 편향만 남습니다. 넣은 앵커만 편향을 계산합니다. 샘플은 생성에 쓴 거리(강당 한가운데, 높이 1 m)를 미리 채워 두었습니다."
+              en="Enter a **reference distance** for each anchor: the distance between the taped tag position and the **anchor coordinates in the settings**. Only then does an error in the configured coordinates show up in the bias (derivation below). If you enter an antenna-to-antenna distance taped directly, the coordinate error stays invisible and only the per-anchor ranging bias remains. Bias is computed only for anchors with a value. For the sample the distances used to generate it (hall centre, 1 m high) are pre-filled." />
+            {isRange && (
+              <div class="controls">
+                {(['x', 'y', 'z'] as const).map((ax, k) => (
+                  <NumberField key={ax} label={{ ko: `줄자로 잰 태그 위치 ${ax}`, en: `Taped tag position ${ax}` }} unit="m" step={0.01} value={tagP[k]}
+                    onChange={(v) => setTagP((q) => { const n: [number, number, number] = [q[0], q[1], q[2]]; n[k] = v; return n; })} testId={`ch9-tag-${ax}`}
+                    src={ex(undefined, { ko: '여러분이 직접 잰 값을 넣는 칸입니다(앵커를 측량한 것과 같은 기준점·방법으로)', en: 'Enter the value you measured yourself (same reference point and method as the anchor survey)' })} />
+                ))}
+                <Button onClick={() => fillFromTag(shown.map((x) => x.anchor))} testId="ch9-fill-truth">{tr({ ko: '설정의 앵커 좌표로 기준 거리 채우기', en: 'Fill reference distances from the configured anchors' })}</Button>
+              </div>
+            )}
             <div class="controls">
               {shown.map((x) => (
-                <NumberField key={x.anchor} label={{ ko: `${isRange ? '앵커' : '쌍'} ${x.anchor} 의 실제 ${isRange ? '거리' : '거리차'}`, en: `True ${isRange ? 'distance' : 'difference'}, ${isRange ? 'anchor' : 'pair'} ${x.anchor}` }} unit="m" step={0.001}
+                <NumberField key={x.anchor} label={{ ko: `${isRange ? '앵커' : '쌍'} ${x.anchor} 의 기준 ${isRange ? '거리' : '거리차'}`, en: `Reference ${isRange ? 'distance' : 'difference'}, ${isRange ? 'anchor' : 'pair'} ${x.anchor}` }} unit="m" step={0.001}
                   value={truth[x.anchor] ?? NaN} onChange={(v) => setTruth(x.anchor, v)} testId={`ch9-truth-${x.anchor}`}
-                  src={ex(undefined, { ko: '여러분이 직접 잰 값을 넣는 칸입니다', en: 'Enter the value you measured yourself' })} />
+                  src={ex(undefined, { ko: '여러분이 넣는 값: 줄자로 잰 태그 위치와 설정의 앵커 좌표에서 계산', en: 'Your value: computed from the taped tag position and the configured anchor coordinates' })} />
               ))}
             </div>
             {tooMany && <p class="small muted">{tr({ ko: `앵커 번호가 ${groups.length}종 있습니다. 표와 입력 칸은 앞의 16개만 보여 줍니다.`, en: `${groups.length} distinct anchor ids found; the table and inputs show the first 16.` })}</p>}
@@ -316,8 +332,8 @@ function RangeTab({ loaded, onLoad }: { loaded: Loaded | null; onLoad: (l: Loade
                 <thead><tr>
                   <th>{tr(isRange ? { ko: '앵커', en: 'Anchor' } : { ko: '쌍', en: 'Pair' })}</th>
                   <th class="r">{tr({ ko: '표본 수', en: 'Samples' })}</th>
-                  <th class="r">{tr({ ko: '편향 (평균 − 실제)', en: 'Bias (mean − true)' })}</th>
-                  <th class="r">{tr({ ko: '편향 (중앙값 − 실제)', en: 'Bias (median − true)' })}</th>
+                  <th class="r">{tr({ ko: '편향 (평균 − 기준)', en: 'Bias (mean − reference)' })}</th>
+                  <th class="r">{tr({ ko: '편향 (중앙값 − 기준)', en: 'Bias (median − reference)' })}</th>
                   <th class="r">{tr({ ko: 'σ', en: 'σ' })}</th>
                   <th class="r">{tr({ ko: '강건 σ (MAD)', en: 'Robust σ (MAD)' })}</th>
                   <th class="r">{tr({ ko: '이상치 비율', en: 'Outlier ratio' })}</th>
@@ -327,8 +343,8 @@ function RangeTab({ loaded, onLoad }: { loaded: Loaded | null; onLoad: (l: Loade
                     <tr key={r.anchor}>
                       <td><b>{r.anchor}</b></td>
                       <td class="r"><Num v={r.n} digits={6} src={SRC} /></td>
-                      <td class="r">{Number.isFinite(r.bias) ? <Num v={r.bias * 100} unit="cm" src={fromFile('nlos-fit', '측정 평균 − 입력한 실제 거리', 'Mean of the measurements − the true distance you entered')} /> : '–'}</td>
-                      <td class="r">{Number.isFinite(truth[r.anchor]) ? <Num v={(groups[i].median - truth[r.anchor]) * 100} unit="cm" src={fromFile('nlos-fit', '측정 중앙값 − 입력한 실제 거리', 'Median of the measurements − the true distance you entered')} /> : '–'}</td>
+                      <td class="r">{Number.isFinite(r.bias) ? <Num v={r.bias * 100} unit="cm" src={fromFile('nlos-fit', '측정 평균 − 입력한 기준 거리', 'Mean of the measurements − the reference distance you entered')} /> : '–'}</td>
+                      <td class="r">{Number.isFinite(truth[r.anchor]) ? <Num v={(groups[i].median - truth[r.anchor]) * 100} unit="cm" src={fromFile('nlos-fit', '측정 중앙값 − 입력한 기준 거리', 'Median of the measurements − the reference distance you entered')} /> : '–'}</td>
                       <td class="r"><Num v={r.sigma * 100} unit="cm" src={fromFile('nlos-fit', '표본 표준편차(이상치 포함)', 'Sample standard deviation (outliers included)')} /></td>
                       <td class="r"><Num v={r.robustSigma * 100} unit="cm" src={fromFile('nlos-fit', '1.4826 × 중앙절대편차', '1.4826 × median absolute deviation')} /></td>
                       <td class="r"><Num v={r.outlierRatio * 100} unit="%" src={fromFile('nlos-fit', '중앙값보다 3·(강건 σ) 넘게 큰 측정의 비율', 'Share of measurements more than 3·(robust σ) above the median')} /></td>
@@ -365,11 +381,11 @@ function RangeTab({ loaded, onLoad }: { loaded: Loaded | null; onLoad: (l: Loade
                 <ApplyRow testId="ch9-apply-nlosbias" path="uwb.nlosBiasMean" value={tail.nOut >= 3 ? Number(tail.biasMean.toPrecision(3)) : NaN}
                   label={{ ko: 'NLOS 편향 평균 (문턱을 넘은 양의 평균)', en: 'Mean NLOS bias (mean excess over the threshold)' }} src={fromFile('nlos-fit', '문턱을 넘은 측정들의 (잔차 − 문턱) 평균', 'Mean of (residual − threshold) over the measurements above the threshold')} />
                 <ApplyRow testId="ch9-apply-survey" path="uwb.anchorSurveyError" value={Number.isFinite(biasRms) ? Number(biasRms.toPrecision(3)) : NaN}
-                  label={{ ko: '앵커 좌표 측량 오차의 어림값 (앵커별 편향이 앵커마다 다른 정도)', en: 'Rough anchor survey error (how much the per-anchor biases differ between anchors)' }} src={fromFile('nlos-fit', '(중앙값 − 실제 거리)의 앵커 간 표준편차에서 중앙값 추정의 흔들림을 뺀 값', 'Standard deviation across anchors of (median − true distance), with the scatter of the median estimate removed')}
+                  label={{ ko: '앵커 좌표 오차의 어림값 (시선 방향 몫 + 앵커별 거리 편향, 앵커마다 다른 정도)', en: 'Rough anchor coordinate error (line-of-sight part + per-anchor ranging bias, as it differs between anchors)' }} src={fromFile('nlos-fit', '(중앙값 − 설정 좌표로 계산한 기준 거리)의 앵커 간 표준편차에서 중앙값 추정의 흔들림을 뺀 값', 'Standard deviation across anchors of (median − reference distance from the configured coordinates), with the scatter of the median estimate removed')}
                   note={Number.isFinite(biasRms)
-                    ? <T ko={`실제 거리를 넣은 앵커 ${known.length}개로 계산했습니다. 모든 앵커에 공통인 몫 ${fmt(bs.common * 100, 3)} cm{{der:ch9#nlos-fit|앵커별 편향의 평균|Mean of the per-anchor biases}} 는 좌표 오차가 아니므로(안테나 지연 보정이나 NLOS 가 중앙값을 미는 몫일 수 있음) 뺐습니다. 앵커마다 다른 몫에도 좌표 오차 말고 다른 원인이 섞일 수 있어 거친 어림입니다.`}
-                        en={`Computed from the ${known.length} anchor(s) with a true distance. The part common to all anchors, ${fmt(bs.common * 100, 3)} cm{{der:ch9#nlos-fit|앵커별 편향의 평균|Mean of the per-anchor biases}}, is not a coordinate error (it may be antenna-delay calibration or NLOS pushing the median) and was removed. The part that differs between anchors may still mix in causes other than coordinates, so this is a rough figure.`} />
-                    : tr({ ko: '실제 거리를 두 앵커 이상 넣으면 계산합니다.', en: 'Enter the true distance for at least two anchors to compute this.' })} />
+                    ? <T ko={`기준 거리를 넣은 앵커 ${known.length}개로 계산했습니다. 모든 앵커에 공통인 몫 ${fmt(bs.common * 100, 3)} cm{{der:ch9#nlos-fit|앵커별 편향의 평균|Mean of the per-anchor biases}} 는 좌표 오차가 아니므로(안테나 지연 보정이나 NLOS 가 중앙값을 미는 몫일 수 있음) 뺐습니다. 기준 거리를 **설정 좌표**로 계산했을 때만 좌표 오차가 이 값에 들어갑니다. 안테나 사이를 줄자로 직접 잰 거리라면 이 값은 앵커별 거리 편향만 재므로, 6장의 재측량 값을 대신하지 말고 그 값과 제곱합으로 합치세요.`}
+                        en={`Computed from the ${known.length} anchor(s) with a reference distance. The part common to all anchors, ${fmt(bs.common * 100, 3)} cm{{der:ch9#nlos-fit|앵커별 편향의 평균|Mean of the per-anchor biases}}, is not a coordinate error (it may be antenna-delay calibration or NLOS pushing the median) and was removed. The coordinate error enters this value only if the reference distances were computed from the **configured coordinates**. If they are antenna-to-antenna tape distances, this value measures only the per-anchor ranging bias: do not let it replace the re-survey value of chapter 6, combine the two in quadrature instead.`} />
+                    : tr({ ko: '기준 거리를 두 앵커 이상 넣으면 계산합니다.', en: 'Enter the reference distance for at least two anchors to compute this.' })} />
               </>
             )}
             {!isRange && <p class="small muted">{tr({ ko: '거리차 로그에서는 NLOS 편향이 양쪽 부호로 모두 나타나므로, 오른쪽 꼬리만 보는 NLOS 피팅과 앵커별 편향 반영은 하지 않습니다.', en: 'In range-difference logs the NLOS bias appears with both signs, so the right-tail NLOS fit and the per-anchor bias are not applied.' })}</p>}

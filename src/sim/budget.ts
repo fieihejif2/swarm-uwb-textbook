@@ -136,7 +136,7 @@ export function computeBudget(cfg: SystemConfig): Budget {
   });
   items.push({
     id: 'comm-gap', chapter: 7, kind: 'deterministic', value: gapLag, unit: 'm',
-    formula: cfg.safety.extrapolate ? '\\tfrac{1}{2} a_{\\max}\\,(t_{\\text{age}}^2 - (\\tau_c + T_c)^2)' : 'v_{\\text{rel}}\\,L_{99.9}\\,T_c', inputs: ['comm.loss', 'comm.rate'],
+    formula: cfg.safety.extrapolate ? '\\tfrac{1}{2} a_{\\max}\\,\\big(t_{\\text{age}}^2 - (n_{\\text{hop}}(\\bar\\tau_c + J_c) + T_c)^2\\big)' : 'v_{\\text{rel}}\\,L_{99.9}\\,T_c', inputs: ['comm.loss', 'comm.rate'],
   });
   const A = adjacency(cfg.comm.graph, cfg.nDrones), L = laplacian(A);
   const margin = delayMargin(L, cfg.comm.gain);

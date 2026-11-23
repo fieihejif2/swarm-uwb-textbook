@@ -143,7 +143,7 @@ export function PlanView(p: PlanViewProps) {
                     const lab = labelOf(i)!;
                     return (
                       <text x={right ? 11 : -11} y={below ? 18 : -10} text-anchor={right ? 'start' : 'end'} class="ref-label">
-                        <tspan style={{ fontWeight: 700 }}>{lab.names}</tspan><tspan dx="4">z {lab.zs}</tspan>
+                        <tspan style={{ fontWeight: 700 }}>{lab.names}</tspan>{iw >= 420 && <tspan dx="4">z {lab.zs}</tspan>}
                       </text>
                     );
                   })()}

@@ -7,6 +7,8 @@
 - 모든 데모·수식·Python 채점이 브라우저 안에서 돕니다. **실행 중 네트워크 요청 없음**(오프라인 동작)
 - 화면의 모든 수치에 출처 배지: `문헌`(확인한 문헌) · `유도`(교재 안에서 계산) · `예시값`(출처 없는 가정, 회색)
 
+**바로 보기(휴대폰 가능): https://fieihejif2.github.io/swarm-uwb-textbook/** — `main` 에 푸시하면 GitHub Actions(`.github/workflows/pages.yml`)가 자동으로 다시 배포합니다.
+
 ## 실행 방법
 
 필요한 것: **Node.js 20 이상**. (검증 스크립트를 돌리려면 Python 3.10 이상도 필요합니다.)

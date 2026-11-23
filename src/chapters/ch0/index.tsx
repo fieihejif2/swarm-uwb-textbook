@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useState } from 'preact/hooks';
 import type { ChapterDef } from '../../app/chapters';
 import { fmt, tr } from '../../app/i18n';
 import { budget, config } from '../../app/store';
@@ -29,11 +29,28 @@ function StageDemo() {
   const [seed, setSeed] = useState(3);
   const prm = useDebounced({ gain, delayScale, spacing, seed }, 180);
   const local = useMemo(() => ({ ...cfg, formation: { ...cfg.formation, spacing: prm.spacing } }), [cfg, prm.spacing]);
-  const runs = useMemo(
-    () => STAGES.map((s) => simulateSwarm(swarmFromConfig(local, s.flags, { seed: prm.seed, gain: prm.gain, delayScale: prm.delayScale, T: 30 }))),
-    [local, prm],
-  );
-  const cur = runs[stage];
+  // 지금 보는 단계만 바로 계산하고, 나머지 단계는 한 단계씩 나눠 이어서 계산한다(한 번에 네 단계를 돌리면 화면이 멈춤)
+  const runOf = (i: number) => simulateSwarm(swarmFromConfig(local, STAGES[i].flags, { seed: prm.seed, gain: prm.gain, delayScale: prm.delayScale, T: 30 }));
+  const cur = useMemo(() => runOf(stage), [local, prm, stage]);
+  const [others, setOthers] = useState<{ key: string; runs: (ReturnType<typeof simulateSwarm> | null)[] }>({ key: '', runs: [null, null, null, null] });
+  const runKey = JSON.stringify([prm, local.formation.spacing, local.comm, local.uwb, local.vehicle]);
+  useEffect(() => {
+    let alive = true;
+    const acc: (ReturnType<typeof simulateSwarm> | null)[] = [null, null, null, null];
+    acc[stage] = cur;
+    setOthers({ key: runKey, runs: acc.slice() });
+    const todo = [0, 1, 2, 3].filter((i) => i !== stage);
+    const step = () => {
+      const i = todo.shift();
+      if (i === undefined || !alive) return;
+      acc[i] = runOf(i);
+      setOthers({ key: runKey, runs: acc.slice() });
+      setTimeout(step, 0);
+    };
+    const t = setTimeout(step, 60);
+    return () => { alive = false; clearTimeout(t); };
+  }, [runKey, stage]);
+  const runs = others.runs.map((r, i) => (i === stage ? cur : others.key === runKey ? r : null));
   const baseDelay = commHops(cfg) * cfg.comm.delayMean + (cfg.comm.topology === 'ground' ? cfg.estimation.latency : 0);
   const loopDelay = baseDelay * delayScale + 0.5 / cfg.comm.rate;
   const tauStar = Math.PI / (2 * gain * b.lambdaN);
@@ -53,7 +70,7 @@ function StageDemo() {
       </p>
       <div class="controls">
         <Slider label={{ ko: '대형 유지 게인 $k$', en: 'Formation gain $k$' }} value={gain} min={0.5} max={8} step={0.1} unit="1/s" onChange={setGain} src={ex('comm.gain', LOCAL)} testId="ch0-gain" />
-        <Slider label={{ ko: `지연 배율 (1× = 설정값 ${fmt(baseDelay * 1000, 3)} ms)`, en: `Delay multiplier (1× = ${fmt(baseDelay * 1000, 3)} ms from settings)` }} value={delayScale} min={0} max={10} step={0.5} unit="×" onChange={setDelayScale} src={ex('comm.delayMean', { ko: '전역 설정의 통신·측위 지연에 곱하는 배율', en: 'Multiplier on the comm and estimation delays in the global settings' })} testId="ch0-delay-scale" />
+        <Slider label={{ ko: `측위·통신 지연 배율 (1× = 설정값 ${fmt(baseDelay * 1000, 3)} ms. 루프 지연은 여기에 방송 주기 몫 ${fmt(500 / cfg.comm.rate, 3)} ms 를 더한 값)`, en: `Estimation + comm delay multiplier (1× = ${fmt(baseDelay * 1000, 3)} ms from settings; the loop delay adds the broadcast share of ${fmt(500 / cfg.comm.rate, 3)} ms)` }} value={delayScale} min={0} max={10} step={0.5} unit="×" onChange={setDelayScale} src={ex('comm.delayMean', { ko: '전역 설정의 통신·측위 지연에 곱하는 배율', en: 'Multiplier on the comm and estimation delays in the global settings' })} testId="ch0-delay-scale" />
         <Slider label={{ ko: '대형 간격', en: 'Formation spacing' }} value={spacing} min={0.4} max={2} step={0.05} unit="m" onChange={setSpacing} src={ex('formation.spacing', LOCAL)} testId="ch0-spacing" />
       </div>
       <div class="btn-row" style={{ marginBottom: '10px' }}>
@@ -82,7 +99,7 @@ function StageDemo() {
       <LineChart
         title={{ ko: '네 단계의 대형 오차를 겹쳐 보기', en: 'Formation error of all four steps' }}
         xLabel={{ ko: '시간 [s]', en: 'Time [s]' }} yLabel={{ ko: '대형 오차 [m]', en: 'Formation error [m]' }}
-        series={runs.map((r, i) => ({ name: { ko: STAGES[i].ko, en: STAGES[i].en }, x: r.t, y: r.formationError, width: i === stage ? 3 : 1.5, faint: i !== stage }))}
+        series={runs.map((r, i) => ({ name: { ko: STAGES[i].ko, en: STAGES[i].en }, x: r ? r.t : [], y: r ? r.formationError : [], width: i === stage ? 3 : 1.5, faint: i !== stage }))}
         src={SIM} testId="ch0-error-chart" />
       <LineChart
         title={{ ko: '각 시각에 가장 가까운 두 기체 사이의 거리', en: 'Distance between the closest pair at each instant' }}

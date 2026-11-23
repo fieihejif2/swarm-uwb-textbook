@@ -170,7 +170,7 @@ function FlowTable({ rows }: { rows: FlowRow[] }) {
                 {...pick(active, r.key)}>
                 <td>{on ? '▶ ' : ''}<b>{tr(r.name)}</b> <span class="small muted">· {tr(r.path)}</span>
                   {narrow && <div class="small" style={{ margin: '2px 0' }}>{tr({ ko: '갱신율', en: 'Rate' })} {rate(r)} · {tr({ ko: '지연', en: 'Delay' })} {delay(r)}</div>}
-                  {!narrow && <br />}<span class="small">{tr(r.what)}</span></td>
+                  {!narrow && <br />}<span class="small"><T ko={r.what.ko} en={r.what.en} /></span></td>
                 {!narrow && <td class="r">{rate(r)}</td>}
                 {!narrow && <td class="r">{delay(r)}</td>}
               </tr>
@@ -217,7 +217,7 @@ function FlowDemo() {
       key: 'nbr', name: { ko: '이웃에게 가는 위치', en: 'Position sent to neighbours' },
       path: p2p ? { ko: '기체 → 이웃 기체 직접 (교재의 가정)', en: 'vehicle → neighbour, direct (assumed)' } : { ko: '지상 PC → Crazyradio → 이웃 기체 (교재의 가정)', en: 'ground PC → Crazyradio → neighbour (assumed)' },
       rate: cfg.comm.rate, rateSrc: commRate, delay: ms(tauC), delaySrc: commDelay,
-      what: { ko: '이웃 위치에 반응하는 대형 제어(7장)를 직접 짰을 때만 필요한 길. 궤적을 올려 두고 시작만 보내는 기본 사용법에는 없다', en: 'Needed only if you write a formation controller that reacts to neighbour positions (ch. 7); absent in the basic use of uploading trajectories and sending a start' },
+      what: { ko: '이웃 위치에 반응하는 대형 제어(7장)를 직접 짰을 때만 필요한 길. Crazyswarm2 가 제공하는 궤적 API(미리 올려 두고 시작시키는 방식){{lit:crazyswarm2-docs/trajectory-api}} 만 쓰면 없다', en: 'Needed only if you write a formation controller that reacts to neighbour positions (ch. 7); absent if you only use the trajectory API Crazyswarm2 provides (upload in advance, then start){{lit:crazyswarm2-docs/trajectory-api}}' },
     },
   ];
   const own = tauEst;
@@ -230,8 +230,8 @@ function FlowDemo() {
         <ConceptNote />
         <P ko="상자는 **누가** 일하는지, 화살표는 **무엇이 얼마나 자주, 얼마나 늦게** 건너가는지를 나타냅니다. 화살표를 누르거나 Tab 으로 고르면 아래 표의 같은 줄이 강조됩니다. 수치는 펌웨어의 내부 타이밍을 재현한 것이 아니라, 이 교재의 설정값으로 그린 단순한 그림입니다."
           en="Boxes show **who** does the work; arrows show **what crosses, how often and how late**. Click an arrow or tab to it and the matching row of the table below is highlighted. The numbers do not reproduce the firmware's internal timing; they are a simple picture drawn from this textbook's settings." />
-        <P ko="**'이웃 기체' 상자와 그리로 가는 화살표는 교재의 가정입니다.** 각 기체가 이웃의 위치에 반응하는 대형 제어(7장)를 직접 짰을 때 필요한 길입니다. 지상 PC 중계라면 이 기체의 위치가 로그로 PC 에 내려간 뒤(아래쪽 화살표) PC 가 그것을 이웃에게 다시 올려 보내고, 기체끼리 직접이라면 한 번에 건너갑니다. 궤적을 미리 올려 두고 시작만 보내는 기본 사용법에는 이 화살표가 없습니다. Crazyswarm2 가 이렇게 위치를 중계해 준다는 것은 이 교재가 문헌으로 확인한 사실이 아닙니다."
-          en="**The 'neighbour vehicle' box and the arrow into it are an assumption of this textbook.** It is the path you need if you write a formation controller in which each vehicle reacts to its neighbours' positions (ch. 7). With a ground-PC relay this vehicle's position goes down to the PC as a log (the downward arrow) and the PC sends it up again to the neighbour; directly between vehicles it crosses once. The basic use — upload trajectories, send a start — has no such arrow. That Crazyswarm2 relays positions this way is not something this textbook verified in the literature." />
+        <P ko="**'이웃 기체' 상자와 그리로 가는 화살표는 교재의 가정입니다.** 각 기체가 이웃의 위치에 반응하는 대형 제어(7장)를 직접 짰을 때 필요한 길입니다. 지상 PC 중계라면 이 기체의 위치가 로그로 PC 에 내려간 뒤(아래쪽 화살표) PC 가 그것을 이웃에게 다시 올려 보내고, 기체끼리 직접이라면 한 번에 건너갑니다. Crazyswarm2 가 제공하는 궤적 API(미리 올려 두고 시작시키는 방식){{lit:crazyswarm2-docs/trajectory-api}} 만 쓰면 이 화살표가 없습니다. Crazyswarm2 가 이렇게 위치를 중계해 준다는 것은 이 교재가 문헌으로 확인한 사실이 아닙니다."
+          en="**The 'neighbour vehicle' box and the arrow into it are an assumption of this textbook.** It is the path you need if you write a formation controller in which each vehicle reacts to its neighbours' positions (ch. 7). With a ground-PC relay this vehicle's position goes down to the PC as a log (the downward arrow) and the PC sends it up again to the neighbour; directly between vehicles it crosses once. If you only use the trajectory API Crazyswarm2 provides (upload in advance, then start){{lit:crazyswarm2-docs/trajectory-api}}, there is no such arrow. That Crazyswarm2 relays positions this way is not something this textbook verified in the literature." />
         <FlowDiagram rows={rows} nAnchors={cfg.anchors.length} p2p={p2p} />
         <FlowTable rows={rows} />
         <Segmented label={{ ko: 'UWB 모드 (전역 설정)', en: 'UWB mode (global setting)' }} value={cfg.uwb.mode} onChange={(v) => setPath('uwb.mode', v)} testId="ch6-flow-mode"

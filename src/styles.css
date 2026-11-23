@@ -598,11 +598,25 @@ table.tbl th:first-child, table.tbl td:first-child { min-width: 7.5em; word-brea
   background:
     linear-gradient(to right, var(--surface), var(--surface)) left / 16px 100% no-repeat local,
     linear-gradient(to left, var(--surface), var(--surface)) right / 16px 100% no-repeat local,
-    radial-gradient(farthest-side at 0 50%, rgba(0, 0, 0, 0.16), transparent) left / 10px 100% no-repeat scroll,
-    radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, 0.16), transparent) right / 10px 100% no-repeat scroll;
+    radial-gradient(farthest-side at 0 50%, rgba(128, 128, 128, 0.45), transparent) left / 10px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, rgba(128, 128, 128, 0.45), transparent) right / 10px 100% no-repeat scroll;
 }
 .codeview { background-color: var(--surface-2); }
-.card.derivation .math-block { background-color: var(--surface); }
+.card.derivation .math-block {
+  background:
+    linear-gradient(to right, var(--surface), var(--surface)) left / 16px 100% no-repeat local,
+    linear-gradient(to left, var(--surface), var(--surface)) right / 16px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, rgba(128, 128, 128, 0.45), transparent) left / 10px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, rgba(128, 128, 128, 0.45), transparent) right / 10px 100% no-repeat scroll,
+    var(--surface);
+}
+/* 다크 모드에서도 스크롤 그림자가 보이도록 회색 그림자 */
+:root[data-theme='dark'] .math-block, :root[data-theme='dark'] .table-wrap { --sh: rgba(160, 160, 160, 0.4); }
+/* 휴대폰: 과제 편집기는 줄을 접어 가로 스크롤 없이 읽게 한다(줄 번호는 접힌 줄과 맞지 않으므로 숨김) */
+@media (max-width: 600px) {
+  .editor textarea { white-space: pre-wrap !important; overflow-wrap: anywhere; padding-left: 10px; }
+  .editor .gutter { display: none; }
+}
 /* 터치 대상 */
 .header .brand { padding: 6px 0; }
 .budget-table .btn.small, .budget-table .btn { min-height: 32px; }

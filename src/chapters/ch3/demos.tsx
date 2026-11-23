@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { fmt, tr } from '../../app/i18n';
 import { budget, config, setPath } from '../../app/store';
 import { computeBudget } from '../../sim/budget';
-import { positionErrorMc, simulateRateError, simulateTdoaSchedule, steadyStatePosSigmaFixedDisturbance } from '../../sim/ch3_rate';
+import { perAxisH, positionErrorMc, simulateRateError, simulateTdoaSchedule, steadyStatePosSigmaFixedDisturbance } from '../../sim/ch3_rate';
 import { SystemConfig } from '../../sim/config';
 import { steadyStatePosSigma } from '../../sim/kf';
 import { Vec } from '../../sim/linalg';
@@ -315,7 +315,8 @@ export function ErrorDemo() {
   const nA = cfg.anchors.length;
   const fT = twrRate({ nTags: cfg.nDrones, nAnchors: nA, rangeTime: cfg.uwb.twrRangeTime }).positionRate;
   const fD = tdoaRate({ nAnchors: nA, slotTime: cfg.uwb.tdoaSlotTime }).positionRate;
-  const [sig, setSig] = useState(() => Math.min(0.4, Math.max(0.02, Math.round(b.sigmaPosH * 200) / 200)));
+  // 처음 값은 반올림하지 않은 지금 설정의 수평 측정 오차 → 타일이 오차 예산·본문 문단과 같은 수로 시작한다
+  const [sig, setSig] = useState(() => Math.min(0.4, Math.max(0.02, b.sigmaPosH)));
   const [sa, setSa] = useState(() => Math.min(5, Math.max(0.2, cfg.estimation.accelNoise)));
   // 객체를 그대로 디바운스하면 렌더마다 새 객체가 되어 끝없이 다시 계산된다 → 문자열 키로
   const prmKey = useDebounced(JSON.stringify({ sig, sa }), 160);
@@ -323,40 +324,41 @@ export function ErrorDemo() {
   const fMax = Math.max(100, Math.ceil((Math.max(fT, fD) * 1.2) / 10) * 10);
   const curve = useMemo(() => {
     const x: number[] = [], y: number[] = [];
-    for (let i = 0; i <= 44; i++) { const f = Math.pow(fMax, i / 44); x.push(f); y.push(steadyStatePosSigma(prm.sig, f, prm.sa) * 100); }
+    for (let i = 0; i <= 44; i++) { const f = Math.pow(fMax, i / 44); x.push(f); y.push(perAxisH(steadyStatePosSigma, prm.sig, f, prm.sa) * 100); }
     return { x, y };
   }, [prm, fMax]);
   const sim = useMemo(() => {
     const x = [...new Set([2, 4, 7, 12.5, 20, 30, 45, 62.5, 80, 100, fT, fD].filter((f) => f >= 1 && f <= fMax).map((f) => Number(f.toFixed(3))))].sort((p, q) => p - q);
-    return { x, y: x.map((f, i) => simulateRateError(prm.sig, f, prm.sa, 600, 11 + i) * 100) };
+    return { x, y: x.map((f, i) => perAxisH(simulateRateError, prm.sig, f, prm.sa, 600, 11 + i) * 100) };
   }, [prm, fMax, fT, fD]);
-  const eT = steadyStatePosSigma(sig, fT, sa), eD = steadyStatePosSigma(sig, fD, sa);
-  const fixedRatio = steadyStatePosSigmaFixedDisturbance(sig, fT, sa, fD) / steadyStatePosSigmaFixedDisturbance(sig, fD, sa, fD);
+  // 오차 예산과 같은 수평 규약: √2·σ_ss(σ_pos,H/√2)
+  const eT = perAxisH(steadyStatePosSigma, sig, fT, sa), eD = perAxisH(steadyStatePosSigma, sig, fD, sa);
+  const fixedRatio = perAxisH(steadyStatePosSigmaFixedDisturbance, sig, fT, sa, fD) / perAxisH(steadyStatePosSigmaFixedDisturbance, sig, fD, sa, fD);
   const SRC = der('ch5#steady-state', {
-    ko: '선: 1축 등속 모델 칼만 필터의 정상상태 오차(엔진 steadyStatePosSigma, 5장에서 유도). 점: 같은 모델로 600초 동안 실제로 필터를 돌려 잰 오차의 RMS.',
-    en: 'Line: steady-state error of a Kalman filter on a one-axis constant-velocity model (engine steadyStatePosSigma, derived in chapter 5). Points: RMS error measured by actually running the filter on the same model for 600 s.',
+    ko: '선: 1축 등속 모델 칼만 필터의 정상상태 오차(엔진 steadyStatePosSigma, 5장에서 유도)를 오차 예산과 같은 수평 규약 √2·σ_ss(σ_pos,H/√2) 로 합친 값. 점: 같은 모델로 축마다 600초 동안 실제로 필터를 돌려 잰 오차의 RMS 를 같은 규약으로 합친 값.',
+    en: 'Line: steady-state error of a Kalman filter on a one-axis constant-velocity model (engine steadyStatePosSigma, derived in chapter 5), combined in the budget convention √2·σ_ss(σ_pos,H/√2). Points: RMS error from actually running the filter per axis on the same model for 600 s, combined the same way.',
   });
   return (
     <Demo title={{ ko: '갱신율을 올리면 추정 오차는 얼마나 줄어드나', en: 'How much the estimate improves with update rate' }} testId="ch3-error-demo">
-      <P ko="가로축은 위치 측정이 들어오는 빈도, 세로축은 필터를 거친 뒤의 위치 추정 오차(1σ, 한 축)입니다. 세로 점선 두 개가 지금 설정에서의 TWR(5대가 나눠 쓸 때)과 TDoA 의 갱신율입니다. 두 모드의 차이를 **갱신율 하나로만** 보려고, 측정 한 번의 오차 $\sigma_{\text{pos}}$ 는 같다고 두었습니다."
-        en="The horizontal axis is how often a position measurement arrives; the vertical axis is the position error after filtering (1σ, one axis). The two dashed vertical lines are the update rates of TWR (five drones sharing) and TDoA with the current settings. To isolate **the effect of rate alone**, the error of a single measurement $\sigma_{\text{pos}}$ is taken to be the same for both." />
+      <P ko="가로축은 위치 측정이 들어오는 빈도, 세로축은 필터를 거친 뒤의 수평 위치 추정 오차(1σ, x·y 두 축 합)이고, 위 유도의 마지막 식처럼 오차 예산과 같은 규약으로 계산합니다. 세로 점선 두 개가 지금 설정에서의 TWR(5대가 나눠 쓸 때)과 TDoA 의 갱신율입니다. 두 모드의 차이를 **갱신율 하나로만** 보려고, 측정 한 번의 수평 오차 $\sigma_{\text{pos,H}}$ 는 같다고 두었습니다."
+        en="The horizontal axis is how often a position measurement arrives; the vertical axis is the horizontal position error after filtering (1σ, x and y combined), computed in the same convention as the error budget (the last formula of the derivation above). The two dashed vertical lines are the update rates of TWR (five drones sharing) and TDoA with the current settings. To isolate **the effect of rate alone**, the horizontal error of a single measurement $\sigma_{\text{pos,H}}$ is taken to be the same for both." />
       <div class="controls">
-        <Slider label={{ ko: '측정 한 번의 위치 오차 $\\sigma_{\\text{pos}}$', en: 'Position error of one measurement $\\sigma_{\\text{pos}}$' }} value={sig} min={0.02} max={0.4} step={0.005} scale={100} unit="cm" onChange={setSig} testId="ch3-err-sig"
+        <Slider label={{ ko: '측정 한 번의 수평 위치 오차 $\\sigma_{\\text{pos,H}}$', en: 'Horizontal position error of one measurement $\\sigma_{\\text{pos,H}}$' }} value={sig} min={0.02} max={0.4} step={0.005} scale={100} unit="cm" onChange={setSig} testId="ch3-err-sig"
           src={ex(undefined, { ko: '이 데모에서만 바꾸는 값. 처음 값은 지금 설정의 UWB 수평 위치 오차(DOP × 유효 거리 오차)입니다.', en: 'Local to this demo; starts from the UWB horizontal position error of the current settings (DOP × effective range error).' })} />
         <Slider label={{ ko: '예측 못 하는 가속도 $\\sigma_a$', en: 'Unpredictable acceleration $\\sigma_a$' }} value={sa} min={0.2} max={5} step={0.1} unit="m/s²" onChange={setSa} testId="ch3-err-sa"
           src={ex('estimation.accelNoise', { ko: '이 데모에서만 바꾸는 값. 처음 값은 전역 설정입니다.', en: 'Local to this demo; starts from the global setting.' })} />
       </div>
       <StatRow>
-        <Stat label={{ ko: `TWR ${cfg.nDrones}대 (${fmt(fT, 3)} Hz) 의 추정 오차`, en: `Estimate error, TWR with ${cfg.nDrones} drones (${fmt(fT, 3)} Hz)` }} value={eT * 100} unit="cm" src={SRC} />
-        <Stat label={{ ko: `TDoA (${fmt(fD, 3)} Hz) 의 추정 오차`, en: `Estimate error, TDoA (${fmt(fD, 3)} Hz)` }} value={eD * 100} unit="cm" src={SRC} />
+        <Stat label={{ ko: `TWR ${cfg.nDrones}대 (${fmt(fT, 3)} Hz) 의 수평 추정 오차`, en: `Horizontal estimate error, TWR with ${cfg.nDrones} drones (${fmt(fT, 3)} Hz)` }} value={eT * 100} unit="cm" src={SRC} />
+        <Stat label={{ ko: `TDoA (${fmt(fD, 3)} Hz) 의 수평 추정 오차`, en: `Horizontal estimate error, TDoA (${fmt(fD, 3)} Hz)` }} value={eD * 100} unit="cm" src={SRC} />
         <Stat label={{ ko: '갱신율 비', en: 'Ratio of rates' }} value={fD / fT} unit="×" src={RATE} />
         <Stat label={{ ko: '오차 비', en: 'Ratio of errors' }} value={eT / eD} unit="×" src={SRC} />
         <Stat label={{ ko: '오차 비 (외란 세기를 고정하면)', en: 'Ratio of errors (disturbance held fixed)' }} value={fixedRatio} unit="×"
           src={der('ch5#steady-state', { ko: '모르는 가속도를 TDoA 간격마다 새로 뽑고 측정만 드물게 넣은 리카티 반복(위 유도의 "가정이 결과를 바꾸는 곳")', en: 'Riccati iteration with the unknown acceleration redrawn every TDoA interval and only the measurements made rarer ("Where the assumption changes the answer" above)' })} />
       </StatRow>
       <LineChart
-        title={{ ko: '위치 갱신율에 따른 정상상태 추정 오차', en: 'Steady-state estimate error versus position update rate' }}
-        xLabel={{ ko: '위치 갱신율 [Hz]', en: 'Position update rate [Hz]' }} yLabel={{ ko: '위치 추정 오차 1σ [cm]', en: 'Position estimate error 1σ [cm]' }}
+        title={{ ko: '위치 갱신율에 따른 정상상태 수평 추정 오차', en: 'Steady-state horizontal estimate error versus position update rate' }}
+        xLabel={{ ko: '위치 갱신율 [Hz]', en: 'Position update rate [Hz]' }} yLabel={{ ko: '수평 추정 오차 1σ [cm]', en: 'Horizontal estimate error 1σ [cm]' }}
         series={[
           { name: { ko: '이론 (정상상태 칼만 필터)', en: 'Theory (steady-state Kalman filter)' }, x: curve.x, y: curve.y, slot: 3, dash: '' },
           { name: { ko: '시뮬레이션 (필터를 실제로 돌림)', en: 'Simulation (filter actually run)' }, x: sim.x, y: sim.y, slot: 3, points: true },
@@ -364,12 +366,12 @@ export function ErrorDemo() {
         refLines={[
           { x: fT, label: { ko: `TWR ${cfg.nDrones}대`, en: `TWR, ${cfg.nDrones} drones` }, slot: TWR },
           { x: fD, label: { ko: 'TDoA', en: 'TDoA' }, slot: TDOA },
-          { y: sig * 100, label: { ko: '필터 없이 측정 한 번: σ_pos', en: 'One raw measurement: σ_pos' } },
+          { y: sig * 100, label: { ko: '필터 없이 측정 한 번: σ_pos,H', en: 'One raw measurement: σ_pos,H' } },
         ]}
         yDomain={[0, sig * 100 * 1.12]} xDomain={[0, fMax]} height={270} src={SRC} testId="ch3-error-chart" />
       <Caption>{tr({
-        ko: '갱신율이 0 에 가까우면 추정 오차는 측정 한 번의 오차 σ_pos 와 같아지고(평균 낼 것이 없음), 갱신율이 높아질수록 줄어들지만 줄어드는 속도는 점점 느려집니다. 점은 선과 **같은 외란 가정**으로 참값을 만들어 필터를 돌린 결과라서, 계산이 맞는지를 확인해 줄 뿐 외란 가정 자체를 검증하지는 않습니다.',
-        en: 'Near zero rate the estimate is no better than one measurement, σ_pos (nothing to average). It improves with rate, but ever more slowly. The points generate the truth with **the same disturbance assumption** as the line, so they check the computation, not the disturbance assumption itself.',
+        ko: '갱신율이 0 에 가까우면 추정 오차는 측정 한 번의 오차 σ_pos,H 와 같아지고(평균 낼 것이 없음), 갱신율이 높아질수록 줄어들지만 줄어드는 속도는 점점 느려집니다. 점은 선과 같은 외란 가정으로 참값을 만들어 필터를 돌린 결과라서, 계산이 맞는지를 확인해 줄 뿐 외란 가정 자체를 검증하지는 않습니다.',
+        en: 'Near zero rate the estimate is no better than one measurement, σ_pos,H (nothing to average). It improves with rate, but ever more slowly. The points generate the truth with the same disturbance assumption as the line, so they check the computation, not the disturbance assumption itself.',
       })}</Caption>
     </Demo>
   );
@@ -479,10 +481,11 @@ export function RatePitfall() {
     const run = (m: 'twr' | 'tdoa') => ns.map((k) => computeBudget({ ...cfg, nDrones: k, uwb: { ...cfg.uwb, mode: m, twrRangeTime: m === 'twr' ? cfg.uwb.twrRangeTime / eff : cfg.uwb.twrRangeTime } }));
     const bt = run('twr'), bd = run('tdoa');
     const sa = cfg.estimation.accelNoise;
-    const simD = simulateRateError(bd[0].sigmaPosH, bd[0].posRate, sa, 600, 5) * 100;
+    // 이론선(sigmaEstH)과 같은 수평 규약 √2·(1축 시뮬레이션)(σ_pos,H/√2)
+    const simD = perAxisH(simulateRateError, bd[0].sigmaPosH, bd[0].posRate, sa, 600, 5) * 100;
     return {
       ns, bt, bd,
-      simT: bt.map((b, i) => simulateRateError(b.sigmaPosH, b.posRate, sa, 600, 31 + i) * 100),
+      simT: bt.map((b, i) => perAxisH(simulateRateError, b.sigmaPosH, b.posRate, sa, 600, 31 + i) * 100),
       simD: ns.map(() => simD),
     };
   }, [cfg, eff]);
@@ -547,8 +550,8 @@ export function RatePitfall() {
         en={`With the current settings and ${n} drone(s): the estimate error is ${fmt(bt.sigmaEstH * 100, 3)} cm{{der:ch5#steady-state}} with TWR and ${fmt(bd.sigmaEstH * 100, 3)} cm{{der:ch5#steady-state}} with TDoA. In recommended horizontal spacing that is ${fmt(bt.minSepH, 3)} m${SEPN('모드만 TWR 로 바꿔 계산한 오차 예산의 합', 'Sum of the error budget with only the mode set to TWR')} versus ${fmt(bd.minSepH, 3)} m${SEPN('모드만 TDoA 로 바꿔 계산한 오차 예산의 합', 'Sum of the error budget with only the mode set to TDoA')}, a difference of ${fmt(Math.abs(bt.minSepH - bd.minSepH) * 100, 2)} cm${SEPN('두 값의 차', 'Difference of the two')}.`} />
       <P ko={`**간격은 어떻게 나왔나**(8장의 식). TWR: 기체 크기 {{cfg:vehicle.envelope}} 를 빼고 보면, 무작위 항 $k_\\sigma\\sqrt2\\,\\sqrt{\\sigma_{\\text{est}}^2 + \\sigma_{\\text{trk}}^2}$ = ${fmt(randOf(bt), 3)} m${SEPN('k_σ·√2·√(σ_est² + σ_trk²), TWR', 'k_σ·√2·√(σ_est² + σ_trk²), TWR')}, 나머지(앵커 편향·지연·여유) ${fmt(restOf(bt), 3)} m${SEPN('최소 간격 − 기체 크기 − 무작위 항', 'Minimum spacing − body size − random term')}. TDoA: 무작위 항 ${fmt(randOf(bd), 3)} m${SEPN('k_σ·√2·√(σ_est² + σ_trk²), TDoA', 'k_σ·√2·√(σ_est² + σ_trk²), TDoA')}, 나머지 ${fmt(restOf(bd), 3)} m${SEPN('최소 간격 − 기체 크기 − 무작위 항', 'Minimum spacing − body size − random term')}. 모드에 따라 크게 바뀌는 것은 무작위 항입니다(나머지 항도 모드마다 DOP 가 달라 몇 mm 다릅니다). 그런데 $\\sigma_{\\text{est}}$ 는 추종 오차 $\\sigma_{\\text{trk}}$ = {{cfg:safety.trackingError}} 와 **제곱합**으로 묶이므로, $\\sigma_{\\text{est}}$ 의 차이 × $k_\\sigma\\sqrt2$ 가 간격 차이로 그대로 옮겨지지 않습니다.`}
         en={`**Where the spacing comes from** (the formula of chapter 8). TWR: leaving out the body size {{cfg:vehicle.envelope}}, the random term $k_\\sigma\\sqrt2\\,\\sqrt{\\sigma_{\\text{est}}^2 + \\sigma_{\\text{trk}}^2}$ = ${fmt(randOf(bt), 3)} m${SEPN('k_σ·√2·√(σ_est² + σ_trk²), TWR', 'k_σ·√2·√(σ_est² + σ_trk²), TWR')} and the rest (anchor bias, delays, margin) ${fmt(restOf(bt), 3)} m${SEPN('최소 간격 − 기체 크기 − 무작위 항', 'Minimum spacing − body size − random term')}. TDoA: random term ${fmt(randOf(bd), 3)} m${SEPN('k_σ·√2·√(σ_est² + σ_trk²), TDoA', 'k_σ·√2·√(σ_est² + σ_trk²), TDoA')}, rest ${fmt(restOf(bd), 3)} m${SEPN('최소 간격 − 기체 크기 − 무작위 항', 'Minimum spacing − body size − random term')}. The term that changes much with the mode is the random one (the rest differs by a few mm because the DOP differs per mode). But $\\sigma_{\\text{est}}$ is combined with the tracking error $\\sigma_{\\text{trk}}$ = {{cfg:safety.trackingError}} **in quadrature**, so the difference in $\\sigma_{\\text{est}}$ times $k_\\sigma\\sqrt2$ does not carry over to the spacing one to one.`} />
-      <P ko="여기 나온 추정 오차가 위 '갱신율을 올리면…' 데모의 타일과 조금 다른 것은, 거기서는 두 모드의 측정 한 번의 오차 $\sigma_{\text{pos}}$ 를 같게 두었고 여기서는 모드마다 실제 설정(측정 노이즈와 DOP)이 달라지기 때문입니다."
-        en="The estimate errors here differ slightly from the tiles of the 'How much the estimate improves…' demo above: there the single-measurement error $\sigma_{\text{pos}}$ was the same for both modes; here each mode uses its own settings (measurement noise and DOP)." />
+      <P ko="여기 나온 추정 오차가 위 '갱신율을 올리면…' 데모의 타일과 조금 다른 것은, 거기서는 두 모드의 측정 한 번의 수평 오차 $\sigma_{\text{pos,H}}$ 를 같게 두었고(처음 값은 지금 설정 모드의 값) 여기서는 모드마다 실제 설정(측정 노이즈와 DOP)이 달라지기 때문입니다."
+        en="The estimate errors here differ slightly from the tiles of the 'How much the estimate improves…' demo above: there the single-measurement horizontal error $\sigma_{\text{pos,H}}$ was the same for both modes (starting from the value of the currently set mode); here each mode uses its own settings (measurement noise and DOP)." />
       <P ko="간격 차이가 몇 cm 뿐이라고 안심하면 안 됩니다. 이 모델이 빼먹은 것이 셋 있습니다. 첫째, 공식 문서는 TWR 에서 측위할 수 있는 태그를 1대로 적고 있습니다{{lit:lps-docs/twr-tag-limit}}. 여러 대가 채널을 사이좋게 나눠 쓴다는 것부터가 이 교재의 가정입니다. 둘째, 이 모델에는 패킷 충돌과 재전송이 없습니다. 여러 태그가 조율 없이 송신하면 갱신율은 더 떨어집니다. 위의 채널 효율을 낮춰 보면 그 방향이 보입니다. 셋째, 드론이 급하게 움직일수록(위 '갱신율을 올리면…' 데모의 $\sigma_a$ 가 클수록) 낮은 갱신율이 치르는 값은 더 커집니다."
         en="Do not relax because the spacing differs by only a few centimetres. The model leaves out three things. First, the official docs say TWR can position one tag{{lit:lps-docs/twr-tag-limit}}; several tags politely sharing the channel is already an assumption of this textbook. Second, the model has no packet collisions or retransmissions; tags transmitting without coordination would do worse. Lower the channel efficiency above to see the direction. Third, the harder the drones manoeuvre (the larger $\sigma_a$ in the 'How much the estimate improves…' demo above), the more a low update rate costs." />
       <h3>{tr({ ko: '반대쪽 함정: TDoA 를 골랐으니 끝났다고 생각하기', en: 'The opposite trap: choosing TDoA and thinking you are done' })}</h3>

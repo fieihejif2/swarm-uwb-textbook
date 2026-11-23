@@ -2,7 +2,7 @@
 import { useEffect, useMemo } from 'preact/hooks';
 import { L } from '../app/i18n';
 import { computeBudget } from '../sim/budget';
-import { withPath } from '../sim/ch9_measure';
+import { sensitivityValue, withPath } from '../sim/ch9_measure';
 import { BUDGET_LABELS, budgetSrc } from '../app/budgetLabels';
 import { FIELDS, GROUP_LABELS, fieldMeta, fieldSource } from '../app/fields';
 import { fmt, lang, tr } from '../app/i18n';
@@ -23,7 +23,7 @@ import { Scene3D } from '../ui/Scene3D';
 import { P, T } from '../ui/Tx';
 
 const CALC = der('ch8#budget-sum', { ko: '현재 설정값을 교재의 식에 넣어 계산한 값', en: 'Computed from the current settings with the textbook formulas' });
-const SENS = der('ch9#sensitivity', { ko: '이 값만 2배로 바꿔 오차 예산을 다시 계산한 결과와의 차(큰 쪽: 수평 또는 수직)', en: 'Difference to the budget recomputed with only this value doubled (larger of horizontal and vertical)' });
+const SENS = der('ch9#sensitivity', { ko: '이 값만 2배로(확률은 2배와 100 % 까지 남은 거리의 절반 중 작은 쪽으로) 바꿔 오차 예산을 다시 계산한 결과 − 지금 값. + 는 간격이 넓어짐, − 는 좁아짐', en: 'Budget recomputed with only this value doubled (a probability: the smaller of doubling and half the remaining distance to 100 %) minus the current one; + widens, − narrows the spacing' });
 const SHAPE: Record<string, L> = {
   line: { ko: '일렬', en: 'line' }, v: { ko: 'V자', en: 'V' }, pentagon: { ko: '오각형', en: 'pentagon' }, cross: { ko: '십자', en: 'cross' }, stack: { ko: '수직 쌓기', en: 'vertical stack' },
 };
@@ -40,8 +40,8 @@ const HOW: Record<string, [How, L]> = {
   'comm.loss.p': ['measure', { ko: '9장 실험 4', en: 'Ch. 9 exp. 4' }],
   'comm.loss.pGB': ['measure', { ko: '9장 실험 4', en: 'Ch. 9 exp. 4' }],
   'comm.loss.pBG': ['measure', { ko: '9장 실험 4', en: 'Ch. 9 exp. 4' }],
-  'comm.loss.lossGood': ['measure', { ko: '9장 실험 4 (0 % 로 단순화)', en: 'Ch. 9 exp. 4 (simplified to 0 %)' }],
-  'comm.loss.lossBad': ['measure', { ko: '9장 실험 4 (100 % 로 단순화)', en: 'Ch. 9 exp. 4 (simplified to 100 %)' }],
+  'comm.loss.lossGood': ['none', { ko: '9장 실험 4 로는 따로 잴 수 없음 (실험 4 는 0 % 로 두고 전이 확률을 맞춘다)', en: 'Not separately measurable with ch. 9 exp. 4 (exp. 4 fixes it at 0 % and fits the transition probabilities)' }],
+  'comm.loss.lossBad': ['none', { ko: '9장 실험 4 로는 따로 잴 수 없음 (실험 4 는 100 % 로 둔다. 100 % 는 보수적인 쪽)', en: 'Not separately measurable with ch. 9 exp. 4 (exp. 4 fixes it at 100 %, the conservative side)' }],
   'safety.trackingError': ['measure', { ko: '9장 실험 5', en: 'Ch. 9 exp. 5' }],
   'safety.downwashRatio': ['measure', { ko: '9장 실험 6', en: 'Ch. 9 exp. 6' }],
   'hall.x': ['sheet', { ko: '줄자로 재기', en: 'Tape measure' }],
@@ -121,18 +121,25 @@ export function Report() {
   const sameHeight = Math.max(...zs) - Math.min(...zs) < 0.5;
   const worstDop = Math.max(...circuit.map((c) => dopFor(cfg.uwb.mode, cfg.anchors, c).pdop));
   const examples = FIELDS.filter((f) => fieldSource(f.path, getPath(cfg, f.path) as number).kind === 'ex');
-  const marginFactor = b.delayMargin / b.loopDelay;
+  // 7장과 같은 두 기준: 평균 루프 지연과 최대 루프 지연(손실 없을 때). 판정은 둘 중 작은 여유로 한다(7장의 규칙).
+  const marginMean = b.delayMargin / b.loopDelay;
+  const loopMax = cfg.estimation.latency + commHops(cfg) * (cfg.comm.delayMean + cfg.comm.delayJitter) + 1 / cfg.comm.rate;
+  const marginFactor = Math.min(marginMean, b.delayMargin / loopMax);
   const burst = burstLengthQuantile(cfg.comm.loss, 1e-3);
   // 예시값 입력마다 "2배로 바꾸면 권장 간격이 얼마나 바뀌나"(9장 민감도)와 "어떻게 정하나"
   const [wideRef, pageW] = useWidth<HTMLDivElement>();
   const narrow = pageW > 0 && pageW < 600;
+  // 부호 있는 변화(9장 표와 같은 정의 Δd = d(바꾼 값) − d(지금 값)). 정렬과 '다음에 잴 것'은 수평·수직 중 큰 크기로.
   const exRows = useMemo(() => examples.map((f) => {
     const v = getPath(cfg, f.path) as number;
-    const nb = computeBudget(withPath(cfg, f.path, v === 0 ? 0 : 2 * v));
-    const d = Math.max(Math.abs(nb.minSepH - b.minSepH), Math.abs(nb.minSepV - b.minSepV));
-    return { f, d, how: howOf(f.path) };
-  }).sort((p, q) => q.d - p.d), [cfg, b]);
-  const nextToMeasure = exRows.filter((r) => r.how[0] === 'measure' && r.d > 0).slice(0, 3);
+    const isProb = f.unit === '%';
+    const v2 = sensitivityValue(v, isProb);
+    const nb = computeBudget(withPath(cfg, f.path, v2));
+    const dH = nb.minSepH - b.minSepH, dV = nb.minSepV - b.minSepV;
+    return { f, v, v2, isProb, dH, dV, mag: Math.max(Math.abs(dH), Math.abs(dV)), how: howOf(f.path) };
+  }).sort((p, q) => q.mag - p.mag), [cfg, b]);
+  const nextToMeasure = exRows.filter((r) => r.how[0] === 'measure' && r.mag > 0).slice(0, 3);
+  const signed = (d: number) => `${d >= 0 ? '+' : '−'}${fmt(Math.abs(d) * 100, 2)} cm`;
   const nConfigChoices = 5; // 앵커 좌표, 앵커 수, UWB 모드, 통신 구조, 대형 모양
   // 8장과 같은 식: σ_H 는 이미 수평 두 축의 합이므로 ε = kσ·√(σ_H² + σ_V²), 정보 나이 = 측위 지연 + ageMax
   const epsCfg = cfg.safety.kSigma * Math.hypot(b.sigmaEstH, b.sigmaEstV);
@@ -165,8 +172,8 @@ export function Report() {
     cfg.comm.topology === 'p2p'
       ? { ok: 'info', src: der('ch7#p2p-stable'), ko: '기체 간 직접 통신: 지연 한계는 안정성 조건이 아니라 참고값입니다(7장).', en: 'Direct communication: the delay bound is a reference, not a stability condition (ch. 7).' }
       : { ok: marginFactor >= 2 ? 'good' : marginFactor >= 1 ? 'warn' : 'bad', src: der('ch7#delay-bound'),
-        ko: `${marginFactor >= 2 ? `루프 지연 ${fmt(b.loopDelay * 1000, 3)} ms 는 지연 한계 ${fmt(b.delayMargin * 1000, 3)} ms 의 절반 이하입니다.` : marginFactor >= 1 ? `루프 지연 ${fmt(b.loopDelay * 1000, 3)} ms 가 지연 한계 ${fmt(b.delayMargin * 1000, 3)} ms 의 절반을 넘습니다. 게인을 낮추는 것이 안전합니다.` : `루프 지연 ${fmt(b.loopDelay * 1000, 3)} ms 가 지연 한계 ${fmt(b.delayMargin * 1000, 3)} ms 를 넘었습니다. 이 게인으로는 대형이 진동합니다.`} (루프 지연은 7장의 평균 지연 기준. 이웃 위치에 반응하는 대형 보정을 PC 에서 닫힌 루프로 돌릴 때만 해당하고, 궤적을 올려 두고 날리면 해당 없음)`,
-        en: `${marginFactor >= 2 ? `Loop delay ${fmt(b.loopDelay * 1000, 3)} ms is at most half the delay bound ${fmt(b.delayMargin * 1000, 3)} ms.` : marginFactor >= 1 ? `Loop delay ${fmt(b.loopDelay * 1000, 3)} ms exceeds half the delay bound ${fmt(b.delayMargin * 1000, 3)} ms. Lowering the gain is safer.` : `Loop delay ${fmt(b.loopDelay * 1000, 3)} ms exceeds the delay bound ${fmt(b.delayMargin * 1000, 3)} ms. The formation will oscillate with this gain.`} (loop delay based on the mean delays of ch. 7; applies only when a formation correction that reacts to neighbour positions runs as a closed loop on the PC — not when flying uploaded trajectories)` },
+        ko: `루프 지연은 평균 ${fmt(b.loopDelay * 1000, 3)} ms, 최대 ${fmt(loopMax * 1000, 3)} ms(손실 없을 때)이고, 지연 한계 ${fmt(b.delayMargin * 1000, 3)} ms 에 대한 여유 배수는 평균 기준 ${fmt(marginMean, 3)}배, 최대 기준 ${fmt(b.delayMargin / loopMax, 3)}배입니다. ${marginFactor >= 2 ? '작은 쪽도 2배를 넘습니다.' : marginFactor >= 1 ? '작은 쪽이 2배보다 작습니다. 7장의 규칙대로 둘 다 2배를 넘을 때까지 게인을 낮추거나 지연을 줄이는 것이 안전합니다.' : '최대 지연이 지연 한계를 넘었습니다. 이 게인으로는 대형이 진동할 수 있습니다.'} (이웃 위치에 반응하는 대형 보정을 PC 에서 닫힌 루프로 돌릴 때만 해당하고, 궤적을 올려 두고 날리면 해당 없음)`,
+        en: `The loop delay is ${fmt(b.loopDelay * 1000, 3)} ms on average and ${fmt(loopMax * 1000, 3)} ms at most (no loss); against the delay bound ${fmt(b.delayMargin * 1000, 3)} ms the margin factor is ${fmt(marginMean, 3)} on the mean and ${fmt(b.delayMargin / loopMax, 3)} on the maximum. ${marginFactor >= 2 ? 'Even the smaller one exceeds 2.' : marginFactor >= 1 ? 'The smaller one is below 2; following the rule of chapter 7, lower the gain or cut the delay until both exceed 2.' : 'The maximum delay exceeds the delay bound; with this gain the formation may oscillate.'} (Applies only when a formation correction that reacts to neighbour positions runs as a closed loop on the PC — not when flying uploaded trajectories.)` },
     cfg.uwb.mode === 'tdoa' && outside > 0
       ? { ok: 'bad', src: lit('lps-docs', 'tdoa2-convex-hull'), ko: `TDoA 모드인데 대형 경로(점선 원 위 24점)의 ${outside}/24 지점이 앵커가 둘러싼 공간 밖입니다(2장).`, en: `TDoA mode, but ${outside}/24 points of the formation path (24 points on the dashed circle) lie outside the anchor volume (ch. 2).` }
       : { ok: 'good', src: lit('lps-docs', 'tdoa2-convex-hull'), ko: '대형 경로(점선 원 위 24점)가 앵커가 둘러싼 공간 안에 있습니다.', en: 'The formation path (24 points on the dashed circle) stays inside the anchor volume.' },
@@ -202,7 +209,7 @@ export function Report() {
           <Stat label={{ ko: '권장 최소 수평 간격', en: 'Recommended min. horizontal spacing' }} value={b.minSepH} unit="m" src={CALC} status={b.spacingOk ? 'good' : 'bad'} />
           <Stat label={{ ko: '권장 최소 수직 간격', en: 'Recommended min. vertical spacing' }} value={b.minSepV} unit="m" src={CALC} />
           <Stat label={{ ko: '지금 대형 간격', en: 'Current formation spacing' }} value={cfg.formation.spacing} unit="m" src={ex('formation.spacing')} />
-          <Stat label={{ ko: '지연 여유 τ* / τ_loop', en: 'Delay margin τ* / τ_loop' }} value={marginFactor} unit="×" src={der('ch7#delay-bound')} status={cfg.comm.topology === 'p2p' ? undefined : marginFactor < 1 ? 'bad' : marginFactor < 2 ? 'warn' : 'good'} />
+          <Stat label={{ ko: '지연 여유 τ* / τ_loop (평균·최대 중 작은 쪽)', en: 'Delay margin τ* / τ_loop (smaller of mean and max)' }} value={marginFactor} unit="×" src={der('ch7#delay-bound', { ko: 'τ* / 루프 지연. 평균 지연과 최대 지연(손실 없을 때) 기준 중 작은 쪽(7장의 규칙)', en: 'τ* / loop delay, the smaller of the mean-delay and max-delay (no loss) figures (rule of ch. 7)' })} status={cfg.comm.topology === 'p2p' ? undefined : marginFactor < 1 ? 'bad' : marginFactor < 2 ? 'warn' : 'good'} />
         </StatRow>
         {examples.length > 0 && <p><Status kind="warn">{tr({ ko: '예시값 기준', en: 'Based on example values' })}</Status> <T ko={`결론의 숫자는 **예시값 기준**입니다. 수치 입력 ${examples.length}개{{ex}}와 구성 선택 ${nConfigChoices}개{{ex}}를 아직 측정이나 결정으로 바꾸지 않았습니다(아래 '실제 측정으로 채워야 할 예시값' 표).`} en={`The numbers of this conclusion are **based on example values**: ${examples.length}{{ex}} numeric inputs and ${nConfigChoices}{{ex}} configuration choices have not yet been replaced by measurements or decisions (see the example-value table below).`} /></p>}
         <div class="card">
@@ -301,12 +308,16 @@ export function Report() {
           en={`The ${examples.length} numeric inputs below are assumptions with no source. In addition, ${nConfigChoices} configuration choices (anchor coordinates, number of anchors, UWB mode, communication structure, formation shape) are example values too: survey the anchor coordinates as in chapter 6 and decide the other four yourself. The conclusions of this report are only as trustworthy as these values. The table is ordered by **how much the recommended spacing changes when the value doubles** (the sensitivity of chapter 9), and the column 'How to set it' separates values to measure from values to choose.`} />
         <div class="table-wrap">
           <table class="tbl" data-testid="report-examples">
-            <thead><tr>{!narrow && <th>{tr({ ko: '분류', en: 'Group' })}</th>}<th>{tr({ ko: '입력', en: 'Input' })}</th><th class="r">{tr({ ko: '지금 값', en: 'Current value' })}</th><th class="r">{tr({ ko: '2배면 간격', en: 'Spacing if doubled' })}</th><th>{tr({ ko: '어떻게 정하나', en: 'How to set it' })}</th><th class="no-print" /></tr></thead>
+            <thead><tr>{!narrow && <th>{tr({ ko: '분류', en: 'Group' })}</th>}<th>{tr({ ko: '입력', en: 'Input' })}</th><th class="r">{tr({ ko: '지금 값', en: 'Current value' })}</th><th class="r">{tr({ ko: '2배면 권장 간격 변화 (수평 / 수직)', en: 'Change in recommended spacing if doubled (horizontal / vertical)' })}</th><th>{tr({ ko: '어떻게 정하나', en: 'How to set it' })}</th><th class="no-print" /></tr></thead>
             <tbody>
-              {exRows.map(({ f, d, how }) => (
+              {exRows.map(({ f, v, v2, isProb, dH, dV, how }) => (
                 <tr key={f.path}>
                   {!narrow && <td class="muted small">{tr(GROUP_LABELS[f.group])}</td>}<td>{tr(f.label)}{narrow && <div class="muted small">{tr(GROUP_LABELS[f.group])}</div>}</td><td class="r"><CfgVal path={f.path} /></td>
-                  <td class="r"><b class="num">+{fmt(d * 100, 2)} cm</b><SrcBadge src={SENS} /></td>
+                  <td class="r" style={{ whiteSpace: 'nowrap' }}>
+                    <div><span class="muted small">{tr({ ko: '수평', en: 'H' })}</span> <b class="num">{signed(dH)}</b></div>
+                    <div><span class="muted small">{tr({ ko: '수직', en: 'V' })}</span> <b class="num">{signed(dV)}</b><SrcBadge src={SENS} /></div>
+                    {isProb && v2 !== 2 * v && <div class="muted small">{tr({ ko: `${fmt(v * 100, 3)} % → ${fmt(v2 * 100, 3)} %`, en: `${fmt(v * 100, 3)} % → ${fmt(v2 * 100, 3)} %` })}</div>}
+                  </td>
                   <td class="small"><b>{tr(HOW_LABEL[how[0]])}</b>{tr(how[1]) !== tr(HOW_LABEL[how[0]]) && <> · {tr(how[1])}</>}</td>
                   <td class="no-print"><button type="button" class="btn ghost small" style={{ minHeight: narrow ? '34px' : '26px', padding: '0 8px', whiteSpace: 'nowrap' }} onClick={() => openSettingsAt(f.path)}>{tr({ ko: '바꾸기', en: 'Change' })}</button></td>
                 </tr>
@@ -314,6 +325,7 @@ export function Report() {
             </tbody>
           </table>
         </div>
+        <p class="small muted"><T ko="변화는 '바꾼 값의 권장 간격 − 지금 권장 간격'입니다. + 는 그 값이 실제로 더 크면 간격을 넓혀야 한다는 뜻이고, − 는 좁아진다는 뜻입니다. 확률인 입력은 2배가 100 % 를 넘을 수 있으므로 2배와 '100 % 까지 남은 거리의 절반' 중 작은 쪽으로 바꾸고, 그때는 바꾼 값을 칸 아래에 적었습니다(9장의 민감도와 같은 규칙)." en="The change is 'recommended spacing with the changed value − current recommended spacing'. + means that if the value is really larger the spacing must widen; − means it narrows. A probability could exceed 100 % when doubled, so it is changed to the smaller of doubling and 'half the remaining distance to 100 %'; in that case the changed value is shown under the cell (the same rule as the sensitivity of chapter 9)." /></p>
       </section>
 
       <div class="card note">
@@ -324,7 +336,7 @@ export function Report() {
           <>
             <p style={{ margin: '8px 0 4px', fontWeight: 600 }}>{tr({ ko: '다음에 잴 것 (민감도가 큰 측정값 순)', en: 'Measure next (measurable values, largest sensitivity first)' })}</p>
             <ol style={{ margin: '0 0 8px' }}>
-              {nextToMeasure.map((r) => <li key={r.f.path}>{tr(r.f.label)} — {tr(r.how[1])} · {tr({ ko: '2배면 간격', en: 'spacing if doubled' })} <b class="num">+{fmt(r.d * 100, 2)} cm</b><SrcBadge src={SENS} /></li>)}
+              {nextToMeasure.map((r) => { const h = Math.abs(r.dH) >= Math.abs(r.dV); return <li key={r.f.path}>{tr(r.f.label)} — {tr(r.how[1])} · {tr(h ? { ko: '2배면 수평 간격', en: 'horizontal spacing if doubled' } : { ko: '2배면 수직 간격', en: 'vertical spacing if doubled' })} <b class="num">{signed(h ? r.dH : r.dV)}</b><SrcBadge src={SENS} /></li>; })}
             </ol>
           </>
         )}

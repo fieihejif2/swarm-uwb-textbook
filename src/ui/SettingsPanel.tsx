@@ -26,7 +26,8 @@ function Field({ m }: { m: FieldMeta }) {
           id={id} type="number" min={m.min} max={m.max} step={m.step} value={Number((raw * m.scale).toPrecision(8))} data-testid={`set-${m.path}`}
           onChange={(e) => {
             const v = Number((e.target as HTMLInputElement).value);
-            if (Number.isFinite(v)) setPath(m.path, Math.min(m.max, Math.max(m.min, v)) / m.scale);
+            // 전역 반영은 다음 틱으로 미뤄 입력란이 먼저 갱신되게 한다(전역 값이 바뀌면 열린 장의 데모가 모두 다시 계산됨)
+            if (Number.isFinite(v)) { const x = Math.min(m.max, Math.max(m.min, v)) / m.scale; setTimeout(() => setPath(m.path, x), 0); }
           }}
         />
         <span class="unit">{m.unit}</span>

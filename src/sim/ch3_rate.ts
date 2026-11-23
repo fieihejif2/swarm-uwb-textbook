@@ -113,3 +113,11 @@ export function steadyStatePosSigmaFixedDisturbance(measSigma: number, rateHz: n
   }
   return Math.sqrt(Math.max(a, 0));
 }
+
+/**
+ * 오차 예산과 같은 수평 규약: 수평 위치 오차 sigmaH(두 축 합)를 두 축에 똑같이 나눠(σ_x = σ_y = σ_H/√2)
+ * 1축 함수 f 를 축마다 적용한 뒤 다시 합친다 → √2·f(σ_H/√2, …). budget.ts 의 sigmaEstH 와 같은 식.
+ */
+export function perAxisH<A extends unknown[]>(f: (sigma: number, ...rest: A) => number, sigmaH: number, ...rest: A): number {
+  return Math.SQRT2 * f(sigmaH / Math.SQRT2, ...rest);
+}

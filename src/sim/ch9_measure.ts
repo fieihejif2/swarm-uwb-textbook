@@ -192,8 +192,9 @@ export function predictStatic(cfg: SystemConfig, p: Vec, measSigma?: number): St
   const q = cfg.estimation.accelNoise;
   return {
     hdop: dop.hdop, vdop: dop.vdop, sigmaEff, posRate,
-    staticH: staticOutputSigma(dop.hdop * sigmaEff, posRate, q), staticV: staticOutputSigma(dop.vdop * sigmaEff, posRate, q),
-    flightH: steadyStatePosSigma(dop.hdop * sigmaEff, posRate, q), flightV: steadyStatePosSigma(dop.vdop * sigmaEff, posRate, q),
+    // 수평은 오차 예산(budget.ts 의 sigmaEstH)과 같은 규약: 두 축 합 σ_H 를 축마다 σ_H/√2 로 나눠 1축 식을 적용한 뒤 √2 배
+    staticH: Math.SQRT2 * staticOutputSigma((dop.hdop * sigmaEff) / Math.SQRT2, posRate, q), staticV: staticOutputSigma(dop.vdop * sigmaEff, posRate, q),
+    flightH: Math.SQRT2 * steadyStatePosSigma((dop.hdop * sigmaEff) / Math.SQRT2, posRate, q), flightV: steadyStatePosSigma(dop.vdop * sigmaEff, posRate, q),
     inside: insideAnchorBox(cfg.anchors, p),
   };
 }
@@ -212,6 +213,14 @@ export function calibrateMeasSigma(cfg: SystemConfig, p: Vec, measuredH: number,
     if (f(mid) < measuredH) lo = mid; else hi = mid;
   }
   return Math.sqrt(lo * hi);
+}
+
+/**
+ * 민감도(9장·리포트)에서 설정 하나를 "크게" 바꾼 값. 보통은 2배.
+ * 확률(0~1)은 2배가 1 을 넘을 수 있으므로 min(2p, (1 + p)/2): 2배와 "1 까지 남은 거리의 절반" 중 작은 쪽(p ≤ 1/3 이면 2배와 같다).
+ */
+export function sensitivityValue(v: number, isProbability: boolean): number {
+  return isProbability ? Math.min(2 * v, (1 + v) / 2) : 2 * v;
 }
 
 /** 설정의 한 경로를 바꾼 사본(전역 상태는 건드리지 않는다). "반영하면 어떻게 되나" 미리 보기용. */
@@ -358,7 +367,7 @@ export function sampleDriftLog(cfg: SystemConfig, seed = 14): string {
   const pr = predictStatic(sampleMeasurementConfig(cfg), pos);
   return SAMPLE_NOTE + '\n' + synthDriftLog({ sigmaH: round(pr.staticH, 4), sigmaV: round(pr.staticV, 4), drift: 0.001, rate: 10, duration: 60, seed, pos });
 }
-/** 거리 로그 샘플: 강당 한가운데 높이 1 m 지점에서 각 앵커까지. 앵커마다 작은 고정 편향을 넣는다. */
+/** 거리 로그 샘플: 강당 한가운데 높이 1 m 지점에서 각 앵커까지. dists 는 설정 좌표로 계산한 기준 거리이고, 앵커마다 고정 편향(1σ = anchorSurveyError)을 더해 "실제 앵커가 설정 좌표에서 어긋난 시선 방향 몫"을 흉내 낸다. */
 export function sampleRangeLog(cfg: SystemConfig, seed = 12): { text: string; point: Vec; dists: number[]; biases: number[] } {
   const point: Vec = [cfg.hall.x / 2, cfg.hall.y / 2, 1];
   const rng = new Rng(seed);

@@ -50,9 +50,9 @@ t,x,y,z
 | `anchor_id` | – | 앵커 번호, 정수 (anchor number, integer). 거리차(TDoA) 로그라면 앵커 **쌍**의 번호 |
 | `range_m` | m | 그 앵커까지 잰 거리 (measured range). 거리차 로그라면 두 앵커까지의 거리의 차 |
 
-실제 거리(줄자·레이저 거리계로 잰 안테나 사이 거리)는 파일에 넣지 않고 **화면의 입력 칸**에 앵커별로 넣는다.
+기준 거리는 파일에 넣지 않고 **화면의 입력 칸**에 앵커별로 넣는다. 기준 거리 $d_a = \lVert p_{\text{tag}} - a_a^{\text{cfg}}\rVert$ 는 줄자로 잰 태그 위치와 **설정에 넣은 앵커 좌표** 사이의 거리다(화면에서 태그 위치를 넣고 버튼으로 채울 수 있다). 안테나 사이 거리를 줄자로 직접 재서 넣으면 앵커 좌표 오차가 편향에 나타나지 않는다(그때 앵커 간 퍼짐은 앵커별 거리 편향만 잰다).
 
-계산(`fitRangeLog`, `rangeGroups`, `fitNlosTail`): 앵커별 평균·중앙값·표준편차, 편향 = 평균 − 실제 거리(표의 참고값)와 중앙값 − 실제 거리(설정에 쓰는 값), 강건 σ = 1.4826 × MAD, 이상치 비율 = 중앙값보다 3·(강건 σ) 넘게 큰 측정의 비율, 오른쪽 꼬리에서 NLOS 확률과 편향 평균. 앵커 측량 오차의 어림(`anchorBiasSpread`)은 (중앙값 − 실제 거리)의 **앵커 간 표준편차**에서 중앙값 추정의 분산(π/2 · σ_rob² / n)을 뺀 값이다. 모든 앵커에 공통인 몫(안테나 지연, NLOS 가 중앙값을 미는 몫)은 좌표 오차가 아니므로 평균으로 빼고 따로 보여 준다.
+계산(`fitRangeLog`, `rangeGroups`, `fitNlosTail`): 앵커별 평균·중앙값·표준편차, 편향 = 평균 − 기준 거리(표의 참고값)와 중앙값 − 기준 거리(설정에 쓰는 값), 강건 σ = 1.4826 × MAD, 이상치 비율 = 중앙값보다 3·(강건 σ) 넘게 큰 측정의 비율, 오른쪽 꼬리에서 NLOS 확률과 편향 평균. 앵커 측량 오차의 어림(`anchorBiasSpread`)은 (중앙값 − 실제 거리)의 **앵커 간 표준편차**에서 중앙값 추정의 분산(π/2 · σ_rob² / n)을 뺀 값이다. 모든 앵커에 공통인 몫(안테나 지연, NLOS 가 중앙값을 미는 몫)은 좌표 오차가 아니므로 평균으로 빼고 따로 보여 준다.
 
 ```csv
 t,anchor_id,range_m
@@ -84,7 +84,7 @@ seq,t_send,t_recv
 
 ## 샘플 파일 (sample files)
 
-`public/samples/` 에 합성 데이터가 들어 있다. 기본 설정(`defaultConfig()`)으로 `src/sim/ch9_measure.ts` 의 `sampleStaticLog` / `sampleDriftLog` / `sampleRangeLog` / `sampleLatencyLog` 를 한 번 돌려 만든 것이며, 각 파일의 첫 줄(`#` 주석)에 생성 파라미터가 적혀 있다. 화면의 "샘플 불러오기" 버튼은 같은 함수를 **현재 전역 설정**으로 브라우저 안에서 돌린다(파일을 내려받지 않는다).
+`public/samples/` 에 합성 데이터가 들어 있다. 기본 설정(`defaultConfig()`)으로 `src/sim/ch9_measure.ts` 의 `sampleStaticLog` / `sampleDriftLog` / `sampleRangeLog` / `sampleLatencyLog` 를 한 번 돌려 만든 것이며, 각 파일의 첫 줄(`#` 주석)에 생성 파라미터가 적혀 있다. 화면의 "샘플 불러오기" 버튼은 같은 함수를 브라우저 안에서 돌린다(파일을 내려받지 않는다). 측정 노이즈와 지연은 현재 설정이 아니라 고정된 예시 측정값(`SAMPLE_MEASUREMENT`: TDoA 20 cm, TWR 13 cm, 편도 지연 28 ms ± 8 ms)으로 만들고, 앵커 배치·측위 모드·NLOS 비율·방송 주기·손실 모델·앵커 측량 오차는 **현재 전역 설정**을 쓴다.
 
 | file | columns | 내용 |
 |---|---|---|

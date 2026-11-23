@@ -178,7 +178,7 @@ function ObstacleDemo() {
     const cur = geo[id];
     const put = (x: number, y: number) => setGeo({ ...geo, [id]: [clamp(Math.round(x * 20) / 20, 0, hall.x), clamp(Math.round(y * 20) / 20, 0, hall.y)] });
     return {
-      tabIndex: 0, role: 'slider' as const, 'aria-valuetext': `x ${fmt(cur[0])} m, y ${fmt(cur[1])} m`, style: { cursor: 'grab', touchAction: 'none' },
+      ...({ tabindex: '0' } as any), role: 'slider' as const, 'aria-valuetext': `x ${fmt(cur[0])} m, y ${fmt(cur[1])} m`, style: { cursor: 'grab', touchAction: 'none' },
       onPointerDown: (e: PointerEvent) => {
         e.stopPropagation();
         (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
@@ -891,8 +891,8 @@ const def: ChapterDef = {
     { ko: '게이트를 끄면 추정이 끌려가고, 너무 조이면 필터가 굶다가 잠긴다. 넉넉한 문턱, 버린 비율의 감시, 덜 믿는 강건 갱신으로 대비한다.', en: 'With the gate off the estimate is dragged; with the gate too tight the filter starves and locks out. Guard with a generous threshold, monitoring of the rejected fraction, and a robust update that trusts less.' },
   ],
   next: {
-    ko: '나쁜 측정을 걸러 냈어도 UWB 위치는 3장에서 구한 갱신율로만 나오고, 그 사이에는 아무 정보가 없으며, 나올 때마다 $\\sigma_{\\text{pos}}$ 만큼 흔들립니다. 게다가 이 장의 게이트는 "필터의 예측"이 이미 있다고 가정했습니다. 그 예측은 어디서 올까요? 그보다 훨씬 자주(펌웨어 소스 주석으로는 1000 Hz{{lit:cf-firmware-docs/kalman-predict-rate}}) 가속도를 재는 IMU 는 무엇을 더해 주고, 둘을 어떻게 합쳐야 할까요?',
-    en: 'Even with the bad measurements filtered out, a UWB position arrives only at the rate found in chapter 3, with no information in between, and jitters by $\\sigma_{\\text{pos}}$ each time. Moreover, the gate of this chapter assumed that "the filter’s prediction" already exists. Where does that prediction come from? What does an IMU that measures acceleration far more often (1000 Hz according to a firmware source comment{{lit:cf-firmware-docs/kalman-predict-rate}}) add, and how should the two be combined?',
+    ko: '나쁜 측정을 걸러 냈어도 UWB 위치는 3장에서 구한 갱신율로만 나오고, 그 사이에는 아무 정보가 없으며, 나올 때마다 $\\sigma_{\\text{pos}}$ 만큼 흔들립니다. 게다가 이 장의 게이트는 "필터의 예측"이 이미 있다고 가정했습니다. 그 예측은 어디서 올까요? 그보다 훨씬 자주 가속도를 재는 IMU 는(펌웨어 소스에서 센서를 읽는 안정화 메인 루프는 1000 Hz{{lit:cf-firmware-docs/main-loop-rate}}이고, 그 값을 모아 쓰는 칼만 예측 단계는 그보다 느린 100 Hz{{lit:cf-firmware-docs/kalman-predict-rate}} 입니다. IMU 를 읽는 빈도와 칼만 예측 빈도는 다른 숫자입니다) 무엇을 더해 주고, 둘을 어떻게 합쳐야 할까요?',
+    en: 'Even with the bad measurements filtered out, a UWB position arrives only at the rate found in chapter 3, with no information in between, and jitters by $\\sigma_{\\text{pos}}$ each time. Moreover, the gate of this chapter assumed that "the filter’s prediction" already exists. Where does that prediction come from? What does an IMU that measures acceleration far more often add (in the firmware source the main stabiliser loop that reads the sensors runs at 1000 Hz{{lit:cf-firmware-docs/main-loop-rate}}, while the Kalman prediction step that uses those readings runs slower, at 100 Hz{{lit:cf-firmware-docs/kalman-predict-rate}}; how often the IMU is read and how often the Kalman filter predicts are different numbers), and how should the two be combined?',
   },
   tasks,
 };
